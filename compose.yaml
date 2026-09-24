@@ -1,0 +1,30 @@
+services:
+  tableau:
+    image: ${TABLEAU_IMAGE:-keycafe-tableau:latest}
+    build: .
+    restart: unless-stopped
+    init: true
+    environment:
+      DJANGO_DEBUG: "false"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      KEYCAFE_EMAIL: ${KEYCAFE_EMAIL:-}
+      KEYCAFE_TOKEN: ${KEYCAFE_TOKEN:-}
+      KEYCAFE_AUTH_MODE: ${KEYCAFE_AUTH_MODE:-token}
+      KEYCAFE_DEMO_MODE: ${KEYCAFE_DEMO_MODE:-false}
+      KEYCAFE_USER_AGENT: ${KEYCAFE_USER_AGENT:-KeycafeTableau/0.1}
+    ports:
+      - "127.0.0.1:${TABLEAU_PORT:-8000}:8000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz/', timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

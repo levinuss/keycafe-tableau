@@ -1,0 +1,160 @@
+# Keycafe Tableau
+
+A Svelte dashboard with Bootstrap 5.3 styling and a Django API proxy for Keycafe.
+
+The German-only app loads key groups available to a Keycafe API credential and is designed for one SmartBox. Keys are shown as **Vor Ort**, **Ausgegeben**, or **Ungeklärt**. The SmartBox name is shown for keys confirmed at home; checked-out keys show their holder. Unexpected location mismatches remain **Ungeklärt**, never falsely marked as available or handed out. Names supplied by the live API are kept as entered in Keycafe.
+
+## Install
+
+```bash
+npm install
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+## Run In Development
+
+### Demo mode
+
+To develop without Keycafe credentials, add this to the repo-root `.env`:
+
+```bash
+KEYCAFE_DEMO_MODE=true
+```
+
+Restart Django after changing `.env`. Demo mode returns deterministic German groups and keys through the same `/api/groups/` and `/api/keys/` endpoints used with the live service. All keys share one SmartBox: five keys are at home, three are handed out to named users, and one has unknown status. No request is sent to Keycafe while demo mode is active.
+
+Set `KEYCAFE_DEMO_MODE=false` or remove it to use the real API. If demo mode and real credentials are both configured, demo mode takes precedence.
+
+### Live Keycafe mode
+
+Configure the server-side Keycafe token:
+
+```bash
+export KEYCAFE_EMAIL="name@example.com"
+export KEYCAFE_TOKEN="your-keycafe-api-token"
+export KEYCAFE_AUTH_MODE="token"
+export KEYCAFE_USER_AGENT="KeycafeTableau/0.1 (+https://docs.keycafe.com/reference/api-overview)"
+```
+
+For an API key created in the Keycafe web UI, set `KEYCAFE_AUTH_MODE="key"`; the value in `KEYCAFE_TOKEN` is then interpreted as the API key. The default is `token`. You can also put those values in a repo-root `.env` file. Django and the token helper load `.env` on startup, so restart Django after changing it.
+
+Start Django:
+
+```bash
+.venv/bin/python manage.py runserver 127.0.0.1:8000
+```
+
+Start Svelte/Vite:
+
+```bash
+npm run dev
+```
+
+Open http://localhost:5173.
+
+The frontend never asks for or sends Keycafe credentials. Django reads the server-side credential from `KEYCAFE_EMAIL` and `KEYCAFE_TOKEN`, selects the Basic-Auth suffix from `KEYCAFE_AUTH_MODE`, and proxies Keycafe requests from the server.
+
+## Create A Keycafe Token
+
+```bash
+.venv/bin/python scripts/create_keycafe_token.py --email name@example.com
+```
+
+The helper uses Keycafe's documented `POST /v0/authorization` endpoint. It prompts for your Keycafe password, handles the 2FA challenge flow when Keycafe requires it, and prints:
+
+```bash
+KEYCAFE_EMAIL='name@example.com'
+KEYCAFE_TOKEN='...'
+```
+
+Useful options:
+
+```bash
+.venv/bin/python scripts/create_keycafe_token.py --email name@example.com --expiry 2026-12-31T23:59:59Z
+.venv/bin/python scripts/create_keycafe_token.py --email name@example.com --two-factor
+.venv/bin/python scripts/create_keycafe_token.py --email name@example.com --user-agent "KeycafeTableauTokenHelper/0.1"
+.venv/bin/python scripts/create_keycafe_token.py --email name@example.com --json
+```
+
+If Cloudflare returns `Error 1010: Access denied`, Keycafe's edge layer has rejected the non-browser request signature. The helper and Django proxy both send `KEYCAFE_USER_AGENT`, but Cloudflare may still block Python HTTP clients based on lower-level request fingerprinting. In that case, create the token from Keycafe's web UI or ask Keycafe support to allow documented API calls for your account/network.
+
+## Access Protection
+
+Authentication and access policies are not handled by this app. The app has no login/logout flow, authenticated users, permission groups, or session cookies. Keycafe key groups and current key holders are inventory data, not app accounts; all admitted visitors use the same server-side Keycafe credential.
+
+- Protect the entire app origin, including `/api/config/`, `/api/groups/`, `/api/keys/`, and static assets, at the proxy.
+- Keep the Django upstream private: bind it to loopback or restrict its container/network port to the proxy. Direct upstream access bypasses authentication.
+- Keep the Vite development server local; do not expose it as an alternative public entry point.
+
+## Production With Docker Compose
+
+The multi-stage image builds Svelte, then serves the API and frontend with Gunicorn
+and WhiteNoise. No database, migrations, Node runtime, or persistent volume is
+needed. The container runs non-root with a read-only filesystem and temporary `/tmp`.
+
+Requires Docker Engine and its Compose plugin. Configure your existing `.env`
+using `.env.example` as a reference:
+
+- Generate `DJANGO_SECRET_KEY` with `python3 -c 'import secrets; print(secrets.token_urlsafe(48))'`.
+- Set `DJANGO_ALLOWED_HOSTS` to the public hostname plus `localhost,127.0.0.1` (needed for the health check).
+- Set `KEYCAFE_EMAIL`, `KEYCAFE_TOKEN`, and explicitly `KEYCAFE_DEMO_MODE=false` for live data.
+- Optionally set `TABLEAU_PORT` (default `8000`) and `TABLEAU_IMAGE` (default `keycafe-tableau:latest`).
+
+Never commit `.env`. It and local databases are excluded from the build context.
+Compose passes only named settings and forces `DJANGO_DEBUG=false`.
+
+```bash
+docker compose config --quiet
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=100 tableau
+```
+
+The upstream is bound to `127.0.0.1:8000` on the Docker host. Terminate HTTPS and
+apply auth at your reverse proxy. A host-based proxy can use
+this loopback address. A containerized proxy needs a shared private Docker network
+with `tableau` and should use `http://tableau:8000`; do not expose the upstream by
+changing the host binding to `0.0.0.0`. Preserve the public `Host` header.
+
+For an image built in CI, set `TABLEAU_IMAGE` to a versioned registry image and run
+`docker compose pull && docker compose up -d --no-build`. The `/healthz/` check
+verifies the app process only, not Keycafe. Before release, verify
+unauthenticated access is blocked for both the page and API, then check asset
+loading, real group membership, and key status/holder accuracy.
+
+Local production-server smoke test without Docker:
+
+```bash
+npm run build
+DJANGO_DEBUG=false .venv/bin/gunicorn --config gunicorn.conf.py keycafe_tableau.wsgi:application
+```
+
+API responses contain group IDs/names, key display fields, and summary counts.
+Owner profiles, phone numbers, addresses, and redundant metadata are not sent to
+the browser. Inventory responses are marked `no-store`. No upstream caching,
+rate-limit handling, or background synchronization has been added.
+
+## What It Uses
+
+- Svelte for the frontend.
+- Bootstrap 5.3 for layout, controls, table, buttons, and responsive styling.
+- Django for `/api/config/`, `/api/groups/`, and `/api/keys/` behind the authentication proxy.
+- `POST /v0/authorization` in the helper script to create a Keycafe API token.
+- `GET /v0/group` to list key groups.
+- `GET /v0/key` to list keys.
+- `GET /v0/key/{key_id}` to enrich list results with `homeLocation`, `currentLocation`, and `currentUser`.
+- Link-header pagination for group and key lists.
+
+Keycafe's Key object exposes `currentLocation` only when a key is checked in and `currentUser` only when it is checked out. The dashboard derives status from those documented fields.
+
+## Note On Key Groups
+
+The Keycafe docs list key groups through `GET /v0/group`, but the visible Search Keys page does not explicitly document a group-membership response or key-group filter parameter. This app keeps group scoping isolated in `keycafe_api/keycafe.py` by passing the selected group id as `group` when searching keys, so it is easy to adjust if your Keycafe account or API plan exposes group membership differently.
+
+## Verify
+
+```bash
+npm run test:frontend
+npm run test:backend
+```
