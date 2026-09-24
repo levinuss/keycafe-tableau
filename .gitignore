@@ -1,0 +1,20 @@
+node_modules/
+.venv/
+.env
+frontend/dist/
+db.sqlite3
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local IDE, agent, credentials, and runtime artifacts
+.idea/
+.codex/
+.agents/
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.log

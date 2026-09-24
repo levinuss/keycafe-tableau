@@ -1,0 +1,14 @@
+.git
+.idea
+.env
+.env.*
+.venv
+node_modules
+frontend/dist
+**/__pycache__
+**/*.pyc
+**/*.sqlite
+**/*.sqlite3
+**/*.sqlite-*
+**/*.sqlite3-*
+.DS_Store
