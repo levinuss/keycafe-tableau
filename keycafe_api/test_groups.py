@@ -1,3 +1,4 @@
+from .testing import UpstreamIsolatedTestCase
 import json
 import os
 import tempfile
@@ -10,7 +11,7 @@ from .groups import list_groups, save_group
 from .keycafe import KeycafeAuth, KeycafeError, fetch_keys
 
 
-class LocalGroupTests(SimpleTestCase):
+class LocalGroupTests(UpstreamIsolatedTestCase):
     def setUp(self):
         super().setUp()
         directory = tempfile.TemporaryDirectory()

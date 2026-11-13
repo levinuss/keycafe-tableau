@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from "svelte";
   import { CircleHelp, KeyRound, LayoutGrid, List, RefreshCw, Search, X } from "@lucide/svelte";
   import GroupEditor from "./components/GroupEditor.svelte";
   import KeyCard from "./components/KeyCard.svelte";
@@ -11,6 +12,15 @@
     { id: "checked-out", label: "Ausgegeben", count: "checked-out" },
     { id: "unknown", label: "Ungeklärt", count: "unknown" },
   ];
+  let autoRefreshMinutes = "0";
+  onMount(() => {
+    const timer = setInterval(() => {
+      if (autoRefreshMinutes !== "0" && !isBusy && !editingGroups && !document.hidden &&
+          Date.now() - lastRefresh >= Number(autoRefreshMinutes) * 60000) refresh();
+    }, 15000);
+    return () => clearInterval(timer);
+  });
+  let lastRefresh = Date.now();
   let groups = [];
   let editingGroups = false;
   let csrfToken = "";
@@ -98,6 +108,7 @@
 
   async function loadKeys() {
     if (!selectedGroup) return;
+    lastRefresh = Date.now();
     setBusy("Schlüsselübersicht wird aktualisiert...");
     try {
       const params = new URLSearchParams({ group: selectedGroup });
@@ -190,6 +201,14 @@
     <section class="register-toolbar" aria-label="Suche und Ansicht">
       <div class="search-field"><Search size={17} aria-hidden="true" /><label class="visually-hidden" for="search">Schlüssel suchen</label><input id="search" class="form-control" type="search" placeholder="Schlüssel oder Person suchen" bind:value={searchQuery} />{#if searchQuery}<button type="button" class="icon-button" title="Suche löschen" aria-label="Suche löschen" on:click={() => searchQuery = ""}><X size={16} /></button>{/if}</div>
       <div class="toolbar-actions">
+        <label class="auto-refresh">Automatisch
+          <select class="form-select form-select-sm" bind:value={autoRefreshMinutes} aria-label="Automatisch aktualisieren">
+            <option value="0">Aus</option>
+            <option value="2">Alle 2 Minuten</option>
+            <option value="5">Alle 5 Minuten</option>
+            <option value="10">Alle 10 Minuten</option>
+          </select>
+        </label>
         <div class="view-toggle" role="group" aria-label="Ansicht">
           <button type="button" class="icon-button" class:active={view === "cards"} title="Kachelansicht" aria-label="Kachelansicht" aria-pressed={view === "cards"} on:click={() => view = "cards"}><LayoutGrid size={17} /></button>
           <button type="button" class="icon-button" class:active={view === "table"} title="Listenansicht" aria-label="Listenansicht" aria-pressed={view === "table"} on:click={() => view = "table"}><List size={19} /></button>

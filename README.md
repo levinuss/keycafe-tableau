@@ -132,7 +132,27 @@ DJANGO_DEBUG=false .venv/bin/gunicorn --config gunicorn.conf.py keycafe_tableau.
 
 API responses contain group IDs/names, key display fields, and summary counts.
 Owner profiles, phone numbers, addresses, and redundant metadata are not sent to
-the browser. Inventory responses are marked `no-store`.
+the browser. Browser responses remain marked `no-store`. Upstream inventory, key details, and
+pickup history are cached server-side for 60 seconds, shared across workers and
+browser sessions using SQLite and a file lock. Pickup cache keys include the current
+holder; changed custody bypasses the previous holder's cache. The short TTL also
+bounds staleness if a return and another pickup happen between refreshes.
+
+The server reserves at most 50 upstream requests in any rolling 60-second window.
+When the budget is exhausted it fails fast without contacting Keycafe. HTTP 429
+starts a shared cooldown of at least 60 seconds (or a longer numeric Retry-After).
+There are no immediate retries. Cache hits remain available during cooldown.
+This budget covers this app instance and workers sharing its database; other
+applications using the same Keycafe account consume additional quota.
+
+`KEYCAFE_CACHE_SECONDS` (default 60) and `KEYCAFE_REQUESTS_PER_MINUTE` (default 50,
+maximum 60) configure these limits. `TABLEAU_UPSTREAM_DB` defaults to
+`upstream.sqlite3` beside the groups database, including in the Docker volume.
+It contains temporary Keycafe data; protect it like the groups database.
+
+The toolbar offers optional auto-refresh every 2, 5, or 10 minutes, off by default.
+It pauses in hidden tabs, during requests, and while editing groups. Manual refresh
+also uses the shared cache. No background synchronization runs on the server.
 
 ## What It Uses
 
