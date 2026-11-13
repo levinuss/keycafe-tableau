@@ -1,3 +1,4 @@
+from .testing import UpstreamIsolatedTestCase
 import base64
 import os
 import tempfile
@@ -11,7 +12,7 @@ from .demo import demo_groups, demo_keys
 from keycafe_tableau.env import load_env_file
 
 
-class KeycafeModelTests(SimpleTestCase):
+class KeycafeModelTests(UpstreamIsolatedTestCase):
     def test_parse_link_header(self):
         links = parse_link_header(
             '<https://www.keycafe.com/v0/key?page=2>; rel="next", '
@@ -172,7 +173,7 @@ class KeycafeModelTests(SimpleTestCase):
                 self.assertEqual(os.environ["KEYCAFE_TOKEN"], "token-value")
 
 
-class DemoModeTests(SimpleTestCase):
+class DemoModeTests(UpstreamIsolatedTestCase):
     def setUp(self):
         self.client = Client()
 
@@ -241,7 +242,7 @@ class DemoModeTests(SimpleTestCase):
         self.assertEqual(keys_response.json()["summary"]["total"], 3)
 
 
-class PickupTimeTests(SimpleTestCase):
+class PickupTimeTests(UpstreamIsolatedTestCase):
     @patch("keycafe_api.keycafe.keycafe_json")
     def test_uses_latest_pickup_event(self, fetch):
         from .keycafe import KeycafeAuth, fetch_pickup_time

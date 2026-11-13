@@ -1,6 +1,8 @@
 import base64
 import json
 import os
+from django.conf import settings
+from . import upstream
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlparse
@@ -63,7 +65,11 @@ def fetch_groups(auth: KeycafeAuth, organization: str | None = None) -> list[dic
 def fetch_keys(auth: KeycafeAuth, group: str | None = None, organization: str | None = None, key_ids=None):
     params = {"organization": organization}
 
-    shallow_keys = fetch_all_pages("/v0/key", auth, params)
+    shallow_keys = upstream.cached(
+        f"inventory:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{organization}",
+        settings.KEYCAFE_CACHE_SECONDS,
+        lambda: fetch_all_pages("/v0/key", auth, params),
+    )
     missing_ids = []
     if key_ids is not None:
         wanted = set(map(str, key_ids))
@@ -85,7 +91,12 @@ def fetch_pickup_time(auth: KeycafeAuth, key: dict) -> dict:
     try:
         # Events describe completed pickups; exchange timestamps describe authorization.
         # Search Events returns newest first, so only the first page is needed.
-        events = keycafe_json(keycafe_url("/v0/event", {"key": key["id"], "type": "PICKUP"}), auth)
+        events = upstream.cached(
+            f"pickup:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{key['id']}:{json.dumps(key['currentUser'], sort_keys=True)}",
+            settings.KEYCAFE_CACHE_SECONDS,
+            lambda: keycafe_json(keycafe_url("/v0/event", {"key": key["id"], "type": "PICKUP"}), auth),
+            validate=lambda events: isinstance(events, list) and all(isinstance(event, dict) for event in events),
+        )
         if not isinstance(events, list) or not all(isinstance(event, dict) for event in events):
             raise KeycafeError(502, "Keycafe hat ungültige Entnahmeereignisse zurückgegeben.")
         return {**key, "removedAt": events[0].get("dateCreated") if events else None}
@@ -104,7 +115,12 @@ def fetch_key_detail_if_needed(auth: KeycafeAuth, key: dict) -> dict:
         return key
 
     try:
-        detail = keycafe_json(f"/v0/key/{key['id']}", auth)
+        detail = upstream.cached(
+            f"detail:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{key['id']}",
+            settings.KEYCAFE_CACHE_SECONDS,
+            lambda: keycafe_json(f"/v0/key/{key['id']}", auth),
+            validate=lambda detail: isinstance(detail, dict) and str(detail.get("id")) == str(key["id"]),
+        )
         if not isinstance(detail, dict) or str(detail.get("id")) != str(key["id"]):
             raise KeycafeError(502, "Keycafe hat ungültige Schlüsseldetails zurückgegeben.")
         # Preserve only descriptive fields, never stale location/holder state.
@@ -156,11 +172,20 @@ def keycafe_fetch(url: str, auth: KeycafeAuth):
         },
     )
 
+    upstream.reserve()
     try:
         with urlopen(request, timeout=20) as response:
             body = response.read().decode("utf-8")
             return parse_json(body), response.headers
     except HTTPError as error:
+        if error.code == 429:
+            retry_after = error.headers.get("Retry-After", "60") if error.headers else "60"
+            try:
+                seconds = int(retry_after)
+            except ValueError:
+                seconds = 60
+            upstream.backoff(seconds)
+            raise KeycafeError(503, "Keycafe hat das Anfragelimit erreicht. Bitte später erneut versuchen.") from None
         message = f"Die Anfrage an Keycafe ist fehlgeschlagen (HTTP {error.code})."
         raise KeycafeError(502, message) from None
     except (URLError, TimeoutError):

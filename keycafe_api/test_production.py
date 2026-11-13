@@ -1,3 +1,4 @@
+from .testing import UpstreamIsolatedTestCase
 import os
 from urllib.error import URLError
 from unittest.mock import patch
@@ -7,7 +8,7 @@ from django.test import SimpleTestCase
 from .keycafe import KeycafeAuth, KeycafeError, fetch_key_detail_if_needed, fetch_groups, keycafe_fetch, normalize_key
 
 
-class DetailTests(SimpleTestCase):
+class DetailTests(UpstreamIsolatedTestCase):
     auth = KeycafeAuth("Basic dummy")
 
     @patch("keycafe_api.keycafe.keycafe_json")
