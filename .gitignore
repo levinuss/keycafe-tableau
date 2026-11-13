@@ -7,6 +7,8 @@ __pycache__/
 *.pyc
 .DS_Store
 
+data/
+
 # Local IDE, agent, credentials, and runtime artifacts
 .idea/
 .codex/

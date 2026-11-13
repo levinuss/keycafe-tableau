@@ -1,5 +1,6 @@
 <script>
   import { CircleHelp, KeyRound, LayoutGrid, List, RefreshCw, Search, X } from "@lucide/svelte";
+  import GroupEditor from "./components/GroupEditor.svelte";
   import KeyCard from "./components/KeyCard.svelte";
   import { requestJson, validConfig, validGroups, validKeys } from "./lib/api.js";
   import { currentLocationLabel, emptySummary, filterKeys, holderLabel } from "./lib/keycafeModel.js";
@@ -11,6 +12,9 @@
     { id: "unknown", label: "Ungeklärt", count: "unknown" },
   ];
   let groups = [];
+  let editingGroups = false;
+  let csrfToken = "";
+  let missingKeyIds = [];
   let selectedGroup = "";
   let keys = [];
   let summary = emptySummary();
@@ -35,6 +39,7 @@
     setBusy("Verbindung wird hergestellt...");
     try {
       const config = await requestJson("/api/config/", validConfig);
+      csrfToken = config.csrfToken;
       keycafeConfigured = config.keycafeConfigured;
       demoMode = config.demoMode;
       if (config.ready) {
@@ -63,9 +68,12 @@
         selectedGroup = String(groups[0].id);
         await loadKeys();
       } else {
+        selectedGroup = "";
+        updatedAt = "";
+        missingKeyIds = [];
         keys = [];
         summary = emptySummary();
-        setStatus("Keycafe hat keine Schlüsselgruppen zurückgegeben.");
+        setStatus("Noch keine Gruppen eingerichtet. Bitte über „Gruppen verwalten“ eine Gruppe anlegen.");
       }
     } catch (error) {
       isConnected = false;
@@ -82,6 +90,7 @@
     searchQuery = "";
     statusFilter = "all";
     keys = [];
+    missingKeyIds = [];
     summary = emptySummary();
     updatedAt = "";
     await loadKeys();
@@ -93,6 +102,7 @@
     try {
       const params = new URLSearchParams({ group: selectedGroup });
       const payload = await requestJson(`/api/keys/?${params.toString()}`, validKeys);
+      missingKeyIds = payload.missingKeyIds || [];
       keys = payload.keys;
       summary = payload.summary;
       isConnected = true;
@@ -161,7 +171,13 @@
   <main class="workspace" aria-busy={isBusy}>
     <header class="register-heading">
       <div><p class="eyebrow">Schlüsselübersicht</p><h1>{groupName}</h1></div>
+      {#if !demoMode}<button type="button" class="btn btn-sm btn-outline-dark" disabled={isBusy} on:click={() => editingGroups = !editingGroups}>Gruppen verwalten</button>{/if}
     </header>
+
+    {#if editingGroups}
+      <GroupEditor {groups} {csrfToken} onClose={() => editingGroups = false} onSaved={async () => { editingGroups = false; missingKeyIds = []; await loadGroups(); }} />
+    {/if}
+    {#if missingKeyIds.length}<p class="error-message" role="alert">Konfigurierte Schlüssel nicht verfügbar: {missingKeyIds.join(', ')}. Bitte IDs und Keycafe-Zugriffsrechte prüfen.</p>{/if}
 
     <section class="status-filters" aria-label="Nach Schlüsselstatus filtern">
       {#each statuses as status}

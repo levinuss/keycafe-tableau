@@ -29,6 +29,7 @@ DEMO_KEYS = [
         "description": "Generalschlüssel der zentralen Werkstatt",
         "serialNumber": "DEMO-A102",
         "homeLocation": DEMO_SMARTBOX,
+        "removedAt": "2026-11-13T08:30:00Z",
         "currentUser": {
             "id": "user-amelie",
             "firstName": "Amelie",
@@ -61,6 +62,7 @@ DEMO_KEYS = [
         "description": "Dienstwagen mit Hybridantrieb",
         "serialNumber": "DEMO-F202",
         "homeLocation": DEMO_SMARTBOX,
+        "removedAt": "2026-11-13T08:30:00Z",
         "currentUser": {
             "id": "user-daniel",
             "firstName": "Daniel",
@@ -75,6 +77,7 @@ DEMO_KEYS = [
         "description": "Transporter des Gebäudeservices",
         "serialNumber": "DEMO-F203",
         "homeLocation": DEMO_SMARTBOX,
+        "removedAt": "2026-11-13T08:30:00Z",
         "currentUser": {
             "id": "user-noor",
             "firstName": "Noor",

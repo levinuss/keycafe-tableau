@@ -8,6 +8,8 @@ services:
       DJANGO_DEBUG: "false"
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      TABLEAU_GROUPS_DB: /data/groups.sqlite3
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-}
       KEYCAFE_EMAIL: ${KEYCAFE_EMAIL:-}
       KEYCAFE_TOKEN: ${KEYCAFE_TOKEN:-}
       KEYCAFE_AUTH_MODE: ${KEYCAFE_AUTH_MODE:-token}
@@ -15,6 +17,8 @@ services:
       KEYCAFE_USER_AGENT: ${KEYCAFE_USER_AGENT:-KeycafeTableau/0.1}
     ports:
       - "127.0.0.1:${TABLEAU_PORT:-8000}:8000"
+    volumes:
+      - tableau-data:/data
     read_only: true
     tmpfs:
       - /tmp
@@ -28,3 +32,6 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+
+volumes:
+  tableau-data:

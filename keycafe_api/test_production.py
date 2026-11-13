@@ -56,7 +56,7 @@ class DetailTests(SimpleTestCase):
 
     def test_keys_drop_unused_personal_and_location_data(self):
         result = normalize_key({"id": 1, "owner": {"email": "private"}, "currentUser": {"firstName": "Ada", "mobile": "private"}})
-        self.assertEqual(set(result), {"id", "name", "serialNumber", "currentLocation", "currentUser", "status", "statusLabel", "detailError"})
+        self.assertEqual(set(result), {"id", "name", "serialNumber", "currentLocation", "currentUser", "status", "statusLabel", "detailError", "removedAt"})
         self.assertEqual(set(result["currentUser"]), {"name", "email"})
 
     def test_health_is_local_and_api_is_not_cacheable(self):

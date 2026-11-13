@@ -1,3 +1,9 @@
+import json
+import sqlite3
+
+from django.middleware.csrf import get_token
+from django.views.decorators.http import require_http_methods
+from .groups import list_groups, get_group, save_group, delete_group
 from django.conf import settings
 from django.http import FileResponse, HttpResponse, JsonResponse
 from django.views.decorators.http import require_GET
@@ -19,6 +25,7 @@ def config(request):
     demo_mode = demo_mode_enabled()
     return JsonResponse(
         {
+            "csrfToken": get_token(request),
             "keycafeConfigured": has_server_credentials(),
             "demoMode": demo_mode,
             "ready": demo_mode or has_server_credentials(),
@@ -26,17 +33,25 @@ def config(request):
     )
 
 
-@require_GET
+@require_http_methods(["GET", "POST"])
 @never_cache
 def groups(request):
-    if demo_mode_enabled():
-        return JsonResponse({"groups": demo_groups()})
+    if request.method == "GET":
+        if demo_mode_enabled():
+            return JsonResponse({"groups": demo_groups()})
+        return _local_response(lambda: {"groups": list_groups()})
+    return _local_response(lambda: {"group": save_group(json.loads(request.body))})
 
-    return _keycafe_response(
-        lambda auth: {
-            "groups": fetch_groups(auth, request.GET.get("organization")),
-        },
-    )
+
+@require_http_methods(["PUT", "DELETE"])
+@never_cache
+def group_detail(request, group_id):
+    def handler():
+        if request.method == "DELETE":
+            delete_group(group_id)
+            return {"deleted": True}
+        return {"group": save_group(json.loads(request.body), group_id)}
+    return _local_response(handler)
 
 
 @require_GET
@@ -44,14 +59,25 @@ def groups(request):
 def keys(request):
     if demo_mode_enabled():
         return JsonResponse(demo_keys(group=request.GET.get("group")))
+    def handler(auth):
+        group_id = request.GET.get("group")
+        group = get_group(group_id) if group_id else None
+        return fetch_keys(auth, organization=request.GET.get("organization"),
+                          key_ids=group["keyIds"] if group else None)
+    return _keycafe_response(handler)
 
-    return _keycafe_response(
-        lambda auth: fetch_keys(
-            auth,
-            group=request.GET.get("group"),
-            organization=request.GET.get("organization"),
-        ),
-    )
+
+def _local_response(handler):
+    try:
+        if demo_mode_enabled():
+            raise KeycafeError(400, "Gruppen können nur im Livebetrieb bearbeitet werden.")
+        return JsonResponse(handler())
+    except (ValueError, UnicodeDecodeError):
+        return JsonResponse({"error": "Ungültige JSON-Daten."}, status=400)
+    except KeycafeError as error:
+        return JsonResponse({"error": str(error)}, status=error.status)
+    except (sqlite3.Error, OSError):
+        return JsonResponse({"error": "Der Gruppenspeicher ist nicht verfügbar."}, status=503)
 
 
 @never_cache
@@ -76,6 +102,8 @@ def _keycafe_response(handler):
     try:
         auth = resolve_auth()
         return JsonResponse(handler(auth))
+    except (sqlite3.Error, OSError):
+        return JsonResponse({"error": "Der Gruppenspeicher ist nicht verfügbar."}, status=503)
     except KeycafeError as error:
         return JsonResponse(
             {"error": str(error)},

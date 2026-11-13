@@ -2,7 +2,7 @@
 
 A Svelte dashboard with Bootstrap 5.3 styling and a Django API proxy for Keycafe.
 
-The German-only app loads key groups available to a Keycafe API credential and is designed for one SmartBox. Keys are shown as **Vor Ort**, **Ausgegeben**, or **Ungeklärt**. The SmartBox name is shown for keys confirmed at home; checked-out keys show their holder. Unexpected location mismatches remain **Ungeklärt**, never falsely marked as available or handed out. Names supplied by the live API are kept as entered in Keycafe.
+The German-only app manages local dashboard groups of Keycafe key IDs and is designed for one SmartBox. Keys are shown as **Vor Ort**, **Ausgegeben**, or **Ungeklärt**. The SmartBox name is shown for keys confirmed at home; checked-out keys show their holder. Unexpected location mismatches remain **Ungeklärt**, never falsely marked as available or handed out. Names supplied by the live API are kept as entered in Keycafe.
 
 ## Install
 
@@ -81,7 +81,7 @@ If Cloudflare returns `Error 1010: Access denied`, Keycafe's edge layer has reje
 
 ## Access Protection
 
-Authentication and access policies are not handled by this app. The app has no login/logout flow, authenticated users, permission groups, or session cookies. Keycafe key groups and current key holders are inventory data, not app accounts; all admitted visitors use the same server-side Keycafe credential.
+Authentication and access policies are not handled by this app. The app has no login/logout flow, authenticated users, permission groups, or session cookies (a CSRF cookie protects group editing). Keycafe key groups and current key holders are inventory data, not app accounts; all admitted visitors use the same server-side Keycafe credential.
 
 - Protect the entire app origin, including `/api/config/`, `/api/groups/`, `/api/keys/`, and static assets, at the proxy.
 - Keep the Django upstream private: bind it to loopback or restrict its container/network port to the proxy. Direct upstream access bypasses authentication.
@@ -90,13 +90,13 @@ Authentication and access policies are not handled by this app. The app has no l
 ## Production With Docker Compose
 
 The multi-stage image builds Svelte, then serves the API and frontend with Gunicorn
-and WhiteNoise. No database, migrations, Node runtime, or persistent volume is
-needed. The container runs non-root with a read-only filesystem and temporary `/tmp`.
+and WhiteNoise. Local groups are stored in SQLite in the `tableau-data` Docker volume. No Django migrations or Node runtime are needed. Back up this volume to preserve groups. The container runs non-root with a read-only filesystem and temporary `/tmp`.
 
 Requires Docker Engine and its Compose plugin. Configure your existing `.env`
 using `.env.example` as a reference:
 
 - Generate `DJANGO_SECRET_KEY` with `python3 -c 'import secrets; print(secrets.token_urlsafe(48))'`.
+- Set `DJANGO_CSRF_TRUSTED_ORIGINS` to the public origin, including HTTPS (for example `https://tableau.example.org`), so group editing works behind your TLS proxy.
 - Set `DJANGO_ALLOWED_HOSTS` to the public hostname plus `localhost,127.0.0.1` (needed for the health check).
 - Set `KEYCAFE_EMAIL`, `KEYCAFE_TOKEN`, and explicitly `KEYCAFE_DEMO_MODE=false` for live data.
 - Optionally set `TABLEAU_PORT` (default `8000`) and `TABLEAU_IMAGE` (default `keycafe-tableau:latest`).
@@ -132,8 +132,7 @@ DJANGO_DEBUG=false .venv/bin/gunicorn --config gunicorn.conf.py keycafe_tableau.
 
 API responses contain group IDs/names, key display fields, and summary counts.
 Owner profiles, phone numbers, addresses, and redundant metadata are not sent to
-the browser. Inventory responses are marked `no-store`. No upstream caching,
-rate-limit handling, or background synchronization has been added.
+the browser. Inventory responses are marked `no-store`.
 
 ## What It Uses
 
@@ -141,16 +140,22 @@ rate-limit handling, or background synchronization has been added.
 - Bootstrap 5.3 for layout, controls, table, buttons, and responsive styling.
 - Django for `/api/config/`, `/api/groups/`, and `/api/keys/` behind the authentication proxy.
 - `POST /v0/authorization` in the helper script to create a Keycafe API token.
-- `GET /v0/group` to list key groups.
+- Local `/api/groups/` endpoints to manage dashboard groups.
 - `GET /v0/key` to list keys.
 - `GET /v0/key/{key_id}` to enrich list results with `homeLocation`, `currentLocation`, and `currentUser`.
 - Link-header pagination for group and key lists.
 
 Keycafe's Key object exposes `currentLocation` only when a key is checked in and `currentUser` only when it is checked out. The dashboard derives status from those documented fields.
 
-## Note On Key Groups
+## Local Key Groups
 
-The Keycafe docs list key groups through `GET /v0/group`, but the visible Search Keys page does not explicitly document a group-membership response or key-group filter parameter. This app keeps group scoping isolated in `keycafe_api/keycafe.py` by passing the selected group id as `group` when searching keys, so it is easy to adjust if your Keycafe account or API plan exposes group membership differently.
+In live mode, use **Gruppen verwalten** to create, rename, edit, and delete dashboard groups. Load the Keycafe inventory and select keys, or enter numeric key IDs separated by commas or newlines. Membership uses stable key IDs; names and status always come from Keycafe. These groups do not modify Keycafe permissions or Keycafe's own groups. Empty groups are supported. Missing/inaccessible configured keys are reported in the dashboard.
+
+Groups are stored server-side in `data/groups.sqlite3` by default. Override `TABLEAU_GROUPS_DB` with an absolute path if needed. Docker Compose uses `/data/groups.sqlite3` in the persistent `tableau-data` volume. Do not delete that volume when updating the app. Demo groups remain deterministic and cannot be edited.
+
+The current public Keycafe API does not document key-group membership or a group filter for Search Keys. The app fetches the accessible inventory, filters by local membership before fetching details, and never sends an undocumented `group` parameter upstream. `/api/keys/` without a group provides the accessible inventory for the editor; an unknown group returns 404.
+
+All visitors admitted by the authentication proxy can manage local groups. Protect the entire origin and restrict access accordingly. Mutations require Django CSRF validation; the app now uses a CSRF cookie (no login/session cookie). Group writes are transactional. Concurrent edits to the same group use the last saved value.
 
 ## Verify
 

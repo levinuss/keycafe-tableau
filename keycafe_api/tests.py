@@ -98,7 +98,7 @@ class KeycafeModelTests(SimpleTestCase):
     def test_resolve_auth_uses_server_token_env(self):
         with patch.dict(
             os.environ,
-            {"KEYCAFE_EMAIL": "user@example.com", "KEYCAFE_TOKEN": "secret-token"},
+            {"KEYCAFE_EMAIL": "user@example.com", "KEYCAFE_TOKEN": "secret-token", "KEYCAFE_AUTH_MODE": "token"},
         ):
             auth = resolve_auth()
 
@@ -239,3 +239,31 @@ class DemoModeTests(SimpleTestCase):
         self.assertEqual(set(groups_response.json()), {"groups"})
         self.assertEqual(keys_response.status_code, 200)
         self.assertEqual(keys_response.json()["summary"]["total"], 3)
+
+
+class PickupTimeTests(SimpleTestCase):
+    @patch("keycafe_api.keycafe.keycafe_json")
+    def test_uses_latest_pickup_event(self, fetch):
+        from .keycafe import KeycafeAuth, fetch_pickup_time
+        fetch.return_value = [{"dateCreated": "2026-11-13T08:30:00Z"},
+                              {"dateCreated": "2026-11-12T08:30:00Z"}]
+        key = fetch_pickup_time(KeycafeAuth("test"), {"id": 1, "currentUser": {"id": 2}})
+        self.assertEqual(normalize_key(key)["removedAt"], "2026-11-13T08:30:00Z")
+        self.assertIn("key=1&type=PICKUP", fetch.call_args.args[0])
+
+    @patch("keycafe_api.keycafe.keycafe_json")
+    def test_missing_history_preserves_holder(self, fetch):
+        from .keycafe import KeycafeAuth, fetch_pickup_time
+        for result in ([], {}, KeycafeError(502, "Unavailable")):
+            fetch.side_effect = result if isinstance(result, Exception) else None
+            fetch.return_value = result
+            key = normalize_key(fetch_pickup_time(KeycafeAuth("test"), {"id": 1, "currentUser": {"id": 2}}))
+            self.assertEqual(key["status"], "checked-out")
+            self.assertIsNone(key["removedAt"])
+
+    @patch("keycafe_api.keycafe.keycafe_json")
+    def test_checked_in_keys_do_not_fetch_or_show_pickup(self, fetch):
+        from .keycafe import KeycafeAuth, fetch_pickup_time
+        key = fetch_pickup_time(KeycafeAuth("test"), {"id": 1, "removedAt": "old"})
+        fetch.assert_not_called()
+        self.assertIsNone(normalize_key(key)["removedAt"])

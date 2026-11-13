@@ -49,3 +49,12 @@ export function keySearchText(key) {
     .join(" ")
     .toLowerCase();
 }
+
+export function removalTimeLabel(value) {
+  if (!value) return "Nicht verfügbar";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Nicht verfügbar";
+  return new Intl.DateTimeFormat("de-DE", {
+    dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Berlin",
+  }).format(date);
+}
