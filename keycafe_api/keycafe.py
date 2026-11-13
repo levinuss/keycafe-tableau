@@ -60,19 +60,38 @@ def fetch_groups(auth: KeycafeAuth, organization: str | None = None) -> list[dic
             for group in sorted(key_groups, key=group_sort_key)]
 
 
-def fetch_keys(auth: KeycafeAuth, group: str | None = None, organization: str | None = None):
+def fetch_keys(auth: KeycafeAuth, group: str | None = None, organization: str | None = None, key_ids=None):
     params = {"organization": organization}
-    if group:
-        params["group"] = group
 
     shallow_keys = fetch_all_pages("/v0/key", auth, params)
+    missing_ids = []
+    if key_ids is not None:
+        wanted = set(map(str, key_ids))
+        shallow_keys = [key for key in shallow_keys if str(key.get("id")) in wanted]
+        missing_ids = sorted(wanted - {str(key.get("id")) for key in shallow_keys})
     enriched_keys = [fetch_key_detail_if_needed(auth, key) for key in shallow_keys]
-    normalized_keys = [normalize_key(key) for key in enriched_keys]
+    normalized_keys = [normalize_key(fetch_pickup_time(auth, key)) for key in enriched_keys]
 
     return {
+        "missingKeyIds": missing_ids,
         "keys": normalized_keys,
         "summary": summarize_keys(normalized_keys),
     }
+
+
+def fetch_pickup_time(auth: KeycafeAuth, key: dict) -> dict:
+    if not key.get("currentUser") or not key.get("id"):
+        return key
+    try:
+        # Events describe completed pickups; exchange timestamps describe authorization.
+        # Search Events returns newest first, so only the first page is needed.
+        events = keycafe_json(keycafe_url("/v0/event", {"key": key["id"], "type": "PICKUP"}), auth)
+        if not isinstance(events, list) or not all(isinstance(event, dict) for event in events):
+            raise KeycafeError(502, "Keycafe hat ungültige Entnahmeereignisse zurückgegeben.")
+        return {**key, "removedAt": events[0].get("dateCreated") if events else None}
+    except KeycafeError:
+        # Missing history must not hide the live inventory or holder.
+        return {**key, "removedAt": None}
 
 
 def fetch_key_detail_if_needed(auth: KeycafeAuth, key: dict) -> dict:
@@ -214,6 +233,7 @@ def normalize_key(key: dict) -> dict:
         "serialNumber": key.get("serialNumber") or "",
         "currentLocation": normalize_location(current_location),
         "currentUser": normalize_user(current_user),
+        "removedAt": key.get("removedAt") if status == "checked-out" else None,
         "status": status,
         "statusLabel": status_label(status),
         "detailError": key.get("detailError") or "",

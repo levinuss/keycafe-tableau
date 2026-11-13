@@ -8,10 +8,10 @@ export const validKeys = (data) => Array.isArray(data.keys) && data.keys.every((
   ["at-home", "checked-out", "unknown"].includes(key.status) && typeof key.statusLabel === "string",
 ) && object(data.summary) && ["total", "at-home", "checked-out", "unknown"].every((field) => Number.isInteger(data.summary[field]) && data.summary[field] >= 0);
 
-export async function requestJson(url, validate) {
+export async function requestJson(url, validate, options = {}) {
   let response;
   try {
-    response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+    response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store", ...options });
   } catch {
     throw new Error("Der Server ist nicht erreichbar. Bitte die Verbindung prüfen.");
   }

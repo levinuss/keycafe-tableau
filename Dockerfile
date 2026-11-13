@@ -12,7 +12,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DJANGO_DEBUG=false
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
-    && useradd --uid 10001 --create-home app
+    && useradd --uid 10001 --create-home app \
+    && mkdir /data && chown app:app /data
 COPY manage.py gunicorn.conf.py ./
 COPY keycafe_tableau keycafe_tableau
 COPY keycafe_api keycafe_api

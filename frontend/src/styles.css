@@ -156,3 +156,10 @@ h1 { font-size: 28px; font-weight: 500; line-height: 1.2; margin: 0; overflow-wr
   .key-custody { min-height: 54px; }
   .result-meta { margin-top: 8px; }
 }
+
+.group-editor { border: 1px solid var(--line); padding: 20px; margin-bottom: 24px; background: #fafbf9; }
+.group-editor h2 { font-size: 20px; margin: 0; }
+.group-key-picker { max-height: 300px; overflow: auto; border-block: 1px solid var(--line); }
+
+.key-removal { margin: 0 16px 16px; }
+

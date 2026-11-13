@@ -18,6 +18,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
 ]
 
 ROOT_URLCONF = "keycafe_tableau.urls"
@@ -27,3 +28,7 @@ LANGUAGE_CODE = "de"
 STATIC_URL = "/assets/"
 STATIC_ROOT = BASE_DIR / "frontend" / "dist" / "assets"
 WHITENOISE_USE_FINDERS = False
+
+TABLEAU_GROUPS_DB = os.environ.get("TABLEAU_GROUPS_DB", str(BASE_DIR / "data" / "groups.sqlite3"))
+
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if origin.strip()]

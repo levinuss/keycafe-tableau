@@ -76,3 +76,10 @@ describe("keycafeModel", () => {
     assert.match(text, /abc123/);
   });
 });
+
+it("formats removal times in Berlin time and handles missing history", async () => {
+  const { removalTimeLabel } = await import("./keycafeModel.js");
+  assert.equal(removalTimeLabel("2026-11-13T08:30:00Z"), "13.11.2026, 09:30");
+  assert.equal(removalTimeLabel(null), "Nicht verfügbar");
+  assert.equal(removalTimeLabel("invalid"), "Nicht verfügbar");
+});

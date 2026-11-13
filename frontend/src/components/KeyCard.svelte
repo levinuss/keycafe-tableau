@@ -1,6 +1,6 @@
 <script>
   import { ArrowUpRight, CircleHelp, House } from "@lucide/svelte";
-  import { locationName } from "../lib/keycafeModel.js";
+  import { locationName, removalTimeLabel } from "../lib/keycafeModel.js";
 
   export let key;
 
@@ -23,6 +23,12 @@
       {#if isOut && key.currentUser?.email}<p class="custody-email">{key.currentUser.email}</p>{/if}
     </div>
   </div>
+  {#if isOut}
+    <div class="key-removal">
+      <span class="field-label">Entnommen am</span>
+      <p class="custody-name" title="Europe/Berlin">{removalTimeLabel(key.removedAt)}</p>
+    </div>
+  {/if}
   <div class="key-card-footer">
     <span class="key-serial">Schlüsselanhänger: {key.serialNumber || "Nicht zugewiesen"}</span>
   </div>

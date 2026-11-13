@@ -29,7 +29,7 @@ class ProxyAuthenticationBoundaryTests(SimpleTestCase):
                 with self.subTest(path=path):
                     response = self.client.get(path)
                     self.assertEqual(response.status_code, 200)
-                    self.assertFalse(response.cookies)
+                    self.assertEqual(set(response.cookies), {"csrftoken"} if path == "/api/config/" else set())
                     self.assertFalse(hasattr(response.wsgi_request, "session"))
                     self.assertFalse(hasattr(response.wsgi_request, "user"))
                     forwarded = self.client.get(
@@ -37,7 +37,10 @@ class ProxyAuthenticationBoundaryTests(SimpleTestCase):
                         HTTP_X_AUTHENTIK_USERNAME="example-user",
                         HTTP_X_AUTHENTIK_GROUPS="example-group",
                     )
-                    self.assertEqual(response.json(), forwarded.json())
+                    original, with_headers = response.json(), forwarded.json()
+                    original.pop("csrfToken", None)
+                    with_headers.pop("csrfToken", None)
+                    self.assertEqual(original, with_headers)
             self.assertNotIn("oidcEnabled", self.client.get("/api/config/").json())
 
     def test_frontend_needs_no_app_session(self):
