@@ -1,0 +1,7 @@
+# Use with compose.yaml. Requires Docker Compose 2.24.4 or newer.
+# Remove the local build so deployment hosts only pull pre-built images.
+services:
+  tableau:
+    build: !reset null
+    image: ${TABLEAU_IMAGE:?Set TABLEAU_IMAGE to a versioned ghcr.io image in .env}
+    pull_policy: always

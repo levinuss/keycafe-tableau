@@ -1,0 +1,108 @@
+name: Test and publish container
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate release tag
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo 'Release tags must use vMAJOR.MINOR.PATCH (for example v0.1.0).'
+            exit 1
+          fi
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: npm ci
+      - run: pip install -r requirements.txt
+      - run: npm run test:frontend
+      - run: python manage.py test
+      - run: npm run build
+
+  container:
+    if: github.event_name == 'release'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Build smoke-test image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: keycafe-tableau:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test production container
+        run: |
+          export TABLEAU_IMAGE=keycafe-tableau:test
+          export DJANGO_SECRET_KEY=ci-only-container-smoke-test
+          export KEYCAFE_DEMO_MODE=true
+          export DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
+          # Override the local build and use the same runtime restrictions as deployment.
+          docker compose -f compose.yaml -f compose.deploy.yaml up -d --no-build --pull never --wait --wait-timeout 90
+          curl --fail --silent http://127.0.0.1:8000/ > /dev/null
+          curl --fail --silent http://127.0.0.1:8000/api/keys/ > /dev/null
+      - name: Container logs and cleanup
+        if: always()
+        env:
+          TABLEAU_IMAGE: keycafe-tableau:test
+          DJANGO_SECRET_KEY: ci-only-container-smoke-test
+        run: |
+          docker compose -f compose.yaml -f compose.deploy.yaml logs --tail=100
+          docker compose -f compose.yaml -f compose.deploy.yaml down --volumes
+      - name: Image metadata
+        if: github.event_name == 'release'
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'release'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish versioned multi-platform image
+        if: github.event_name == 'release'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.image.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
