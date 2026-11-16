@@ -89,6 +89,10 @@ Authentication and access policies are not handled by this app. The app has no l
 
 ## Production With Docker Compose
 
+For a new host using versioned pre-built images from GitHub Container Registry,
+see [the image deployment runbook](deploy/README.md). It includes release publishing,
+registry access, HTTPS proxy setup, updates, and rollback.
+
 The multi-stage image builds Svelte, then serves the API and frontend with Gunicorn
 and WhiteNoise. Local groups are stored in SQLite in the `tableau-data` Docker volume. No Django migrations or Node runtime are needed. Back up this volume to preserve groups. The container runs non-root with a read-only filesystem and temporary `/tmp`.
 
@@ -117,8 +121,8 @@ this loopback address. A containerized proxy needs a shared private Docker netwo
 with `tableau` and should use `http://tableau:8000`; do not expose the upstream by
 changing the host binding to `0.0.0.0`. Preserve the public `Host` header.
 
-For an image built in CI, set `TABLEAU_IMAGE` to a versioned registry image and run
-`docker compose pull && docker compose up -d --no-build`. The `/healthz/` check
+For a pre-built release, set `TABLEAU_IMAGE` to a published version and use both
+`compose.yaml` and `compose.deploy.yaml` as described in the image deployment runbook. The `/healthz/` check
 verifies the app process only, not Keycafe. Before release, verify
 unauthenticated access is blocked for both the page and API, then check asset
 loading, real group membership, and key status/holder accuracy.
