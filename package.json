@@ -1,6 +1,6 @@
 {
   "name": "keycafe-tableau",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "A Svelte and Django Keycafe key status dashboard with key group selection.",
