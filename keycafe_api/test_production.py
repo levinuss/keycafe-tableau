@@ -43,7 +43,7 @@ class DetailTests(UpstreamIsolatedTestCase):
         fetch.side_effect = KeycafeError(502, "Nicht erreichbar")
         self.assertEqual(fetch_key_detail_if_needed(self.auth, {"id": 1})["detailError"], "Nicht erreichbar")
 
-    @patch("keycafe_api.keycafe.urlopen", side_effect=URLError("private upstream details"))
+    @patch("keycafe_api.keycafe.open_authenticated", side_effect=URLError("private upstream details"))
     def test_network_failure_is_sanitized(self, _fetch):
         with self.assertRaises(KeycafeError) as raised:
             keycafe_fetch("https://www.keycafe.com/v0/key", self.auth)

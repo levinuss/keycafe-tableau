@@ -43,6 +43,7 @@
   $: filteredKeys = filterKeys(keys, searchQuery, statusFilter);
   $: groupName = groups.find((group) => String(group.id) === selectedGroup)?.name || "Schlüsselübersicht";
 
+  let keyRequest = 0;
   boot();
 
   async function boot() {
@@ -74,15 +75,11 @@
       groups = payload.groups;
       isConnected = true;
       connectionLabel = demoMode ? "Demomodus" : "Mit Keycafe verbunden";
+      const current = groups.find(group => String(group.id) === selectedGroup);
+      resetGroup(current?.id ?? groups[0]?.id ?? "");
       if (groups.length) {
-        selectedGroup = String(groups[0].id);
         await loadKeys();
       } else {
-        selectedGroup = "";
-        updatedAt = "";
-        missingKeyIds = [];
-        keys = [];
-        summary = emptySummary();
         setStatus("Noch keine Gruppen eingerichtet. Bitte über „Gruppen verwalten“ eine Gruppe anlegen.");
       }
     } catch (error) {
@@ -94,8 +91,8 @@
     }
   }
 
-  async function selectGroup(id) {
-    if (isBusy) return;
+  function resetGroup(id) {
+    ++keyRequest;
     selectedGroup = String(id);
     searchQuery = "";
     statusFilter = "all";
@@ -103,16 +100,23 @@
     missingKeyIds = [];
     summary = emptySummary();
     updatedAt = "";
+  }
+
+  async function selectGroup(id) {
+    if (isBusy) return;
+    resetGroup(id);
     await loadKeys();
   }
 
   async function loadKeys() {
     if (!selectedGroup) return;
+    const request = ++keyRequest;
     lastRefresh = Date.now();
     setBusy("Schlüsselübersicht wird aktualisiert...");
     try {
       const params = new URLSearchParams({ group: selectedGroup });
       const payload = await requestJson(`/api/keys/?${params.toString()}`, validKeys);
+      if (request !== keyRequest) return;
       missingKeyIds = payload.missingKeyIds || [];
       keys = payload.keys;
       summary = payload.summary;
@@ -121,11 +125,12 @@
       updatedAt = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
       setStatus(demoMode ? "Demodaten" : "Schlüsselübersicht ist aktuell");
     } catch (error) {
+      if (request !== keyRequest) return;
       isConnected = false;
       connectionLabel = "Nicht verbunden";
       setStatus(error.message, true);
     } finally {
-      isBusy = false;
+      if (request === keyRequest) isBusy = false;
     }
   }
 

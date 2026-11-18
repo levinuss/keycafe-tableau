@@ -138,7 +138,7 @@ API responses contain group IDs/names, key display fields, and summary counts.
 Owner profiles, phone numbers, addresses, and redundant metadata are not sent to
 the browser. Browser responses remain marked `no-store`. Upstream inventory, key details, and
 pickup history are cached server-side for 60 seconds, shared across workers and
-browser sessions using SQLite and a file lock. Pickup cache keys include the current
+browser sessions using SQLite and file locks for cache fills. Pickup cache keys include the current
 holder; changed custody bypasses the previous holder's cache. The short TTL also
 bounds staleness if a return and another pickup happen between refreshes.
 
@@ -177,7 +177,7 @@ In live mode, use **Gruppen verwalten** to create, rename, edit, and delete dash
 
 Groups are stored server-side in `data/groups.sqlite3` by default. Override `TABLEAU_GROUPS_DB` with an absolute path if needed. Docker Compose uses `/data/groups.sqlite3` in the persistent `tableau-data` volume. Do not delete that volume when updating the app. Demo groups remain deterministic and cannot be edited.
 
-The current public Keycafe API does not document key-group membership or a group filter for Search Keys. The app fetches the accessible inventory, filters by local membership before fetching details, and never sends an undocumented `group` parameter upstream. `/api/keys/` without a group provides the accessible inventory for the editor; an unknown group returns 404.
+The current public Keycafe API does not document key-group membership or a group filter for Search Keys. The app fetches the accessible inventory, filters by local membership before fetching details, and never sends an undocumented `group` parameter upstream. The editor uses `/api/inventory/` for IDs, names, and available serial numbers from the cached list. Opening it skips per-key detail and pickup-history requests. An unknown group on `/api/keys/` returns 404.
 
 All visitors admitted by the authentication proxy can manage local groups. Protect the entire origin and restrict access accordingly. Mutations require Django CSRF validation; the app now uses a CSRF cookie (no login/session cookie). Group writes are transactional. Concurrent edits to the same group use the last saved value.
 

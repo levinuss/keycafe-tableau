@@ -1,5 +1,5 @@
 <script>
-  import { requestJson, validKeys } from '../lib/api.js';
+  import { requestJson, validInventory } from '../lib/api.js';
   export let groups = [];
   export let csrfToken = '';
   export let onSaved;
@@ -21,15 +21,15 @@
     confirmDelete = false;
     error = '';
   }
-  function parsedIds() { return [...new Set(ids.split(/[\s,;]+/).filter(Boolean))]; }
+  $: selectedIds = new Set(ids.split(/[\s,;]+/).filter(Boolean));
   function toggle(id, checked) {
-    const values = new Set(parsedIds());
+    const values = new Set(selectedIds);
     if (checked) values.add(String(id)); else values.delete(String(id));
     ids = [...values].join(', ');
   }
   async function loadInventory() {
     busy = true; error = '';
-    try { inventory = (await requestJson('/api/keys/', validKeys)).keys; }
+    try { inventory = (await requestJson('/api/inventory/', validInventory)).keys; }
     catch (err) { error = err.message; }
     finally { busy = false; }
   }
@@ -39,7 +39,7 @@
       await requestJson(selected ? `/api/groups/${selected}/` : '/api/groups/', data => remove ? data.deleted === true : !!data.group, {
         method: remove ? 'DELETE' : selected ? 'PUT' : 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-        ...(remove ? {} : { body: JSON.stringify({ name, keyIds: parsedIds() }) }),
+        ...(remove ? {} : { body: JSON.stringify({ name, keyIds: [...selectedIds] }) }),
       });
       await onSaved();
     } catch (err) { error = err.message; }
@@ -70,7 +70,7 @@
       <input id="inventory-search" class="form-control mb-2" bind:value={query} type="search" />
       <div class="group-key-picker">
         {#each visible as key}
-          <label class="d-flex gap-2 py-2"><input type="checkbox" checked={parsedIds().includes(String(key.id))} disabled={busy} on:change={event => toggle(key.id, event.currentTarget.checked)} /><span>{key.name} · {key.id}{key.serialNumber ? ` · ${key.serialNumber}` : ''}</span></label>
+          <label class="d-flex gap-2 py-2"><input type="checkbox" checked={selectedIds.has(String(key.id))} disabled={busy} on:change={event => toggle(key.id, event.currentTarget.checked)} /><span>{key.name} · {key.id}{key.serialNumber ? ` · ${key.serialNumber}` : ''}</span></label>
         {/each}
       </div>
     {/if}

@@ -5,8 +5,10 @@ from django.conf import settings
 from . import upstream
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urljoin
+from urllib.request import Request
+
+from .transport import open_authenticated, trusted_destination
 
 
 KEYCAFE_BASE_URL = os.environ.get("KEYCAFE_BASE_URL", "https://www.keycafe.com")
@@ -62,14 +64,18 @@ def fetch_groups(auth: KeycafeAuth, organization: str | None = None) -> list[dic
             for group in sorted(key_groups, key=group_sort_key)]
 
 
-def fetch_keys(auth: KeycafeAuth, group: str | None = None, organization: str | None = None, key_ids=None):
+def fetch_inventory(auth, organization=None):
     params = {"organization": organization}
 
-    shallow_keys = upstream.cached(
+    return upstream.cached(
         f"inventory:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{organization}",
         settings.KEYCAFE_CACHE_SECONDS,
         lambda: fetch_all_pages("/v0/key", auth, params),
     )
+
+
+def fetch_keys(auth: KeycafeAuth, group: str | None = None, organization: str | None = None, key_ids=None):
+    shallow_keys = fetch_inventory(auth, organization)
     missing_ids = []
     if key_ids is not None:
         wanted = set(map(str, key_ids))
@@ -159,8 +165,8 @@ def keycafe_json(path: str, auth: KeycafeAuth):
 
 
 def keycafe_fetch(url: str, auth: KeycafeAuth):
-    if urlparse(url).netloc != urlparse(KEYCAFE_BASE_URL).netloc:
-        raise KeycafeError(502, "Ein Seitenverweis außerhalb von Keycafe wurde abgelehnt.")
+    if not trusted_destination(url, KEYCAFE_BASE_URL):
+        raise KeycafeError(502, "Die Anfrage erfordert HTTPS und den konfigurierten Keycafe-Server.")
 
     request = Request(
         url,
@@ -174,7 +180,7 @@ def keycafe_fetch(url: str, auth: KeycafeAuth):
 
     upstream.reserve()
     try:
-        with urlopen(request, timeout=20) as response:
+        with open_authenticated(request, timeout=20) as response:
             body = response.read().decode("utf-8")
             return parse_json(body), response.headers
     except HTTPError as error:

@@ -3,6 +3,9 @@ const id = (value) => typeof value === "string" || typeof value === "number";
 
 export const validConfig = (data) => ["ready", "demoMode", "keycafeConfigured"].every((field) => typeof data[field] === "boolean");
 export const validGroups = (data) => Array.isArray(data.groups) && data.groups.every((group) => object(group) && id(group.id) && typeof group.name === "string");
+export const validInventory = (data) => Array.isArray(data.keys) && data.keys.every((key) =>
+  object(key) && id(key.id) && typeof key.name === "string" && typeof key.serialNumber === "string"
+);
 export const validKeys = (data) => Array.isArray(data.keys) && data.keys.every((key) =>
   object(key) && id(key.id) && typeof key.name === "string" &&
   ["at-home", "checked-out", "unknown"].includes(key.status) && typeof key.statusLabel === "string",

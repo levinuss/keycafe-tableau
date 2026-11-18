@@ -11,7 +11,7 @@ from django.views.decorators.cache import never_cache
 
 from .keycafe import (
     KeycafeError,
-    fetch_groups,
+    fetch_inventory,
     fetch_keys,
     has_server_credentials,
     resolve_auth,
@@ -52,6 +52,19 @@ def group_detail(request, group_id):
             return {"deleted": True}
         return {"group": save_group(json.loads(request.body), group_id)}
     return _local_response(handler)
+
+
+@require_GET
+@never_cache
+def inventory(request):
+    def picker_rows(rows):
+        return {"keys": [{"id": key["id"], "name": key.get("name") or f"Schlüssel {key['id']}",
+                          "serialNumber": key.get("serialNumber") or ""}
+                         for key in rows if key.get("id") is not None]}
+
+    if demo_mode_enabled():
+        return JsonResponse(picker_rows(demo_keys()["keys"]))
+    return _keycafe_response(lambda auth: picker_rows(fetch_inventory(auth, request.GET.get("organization"))))
 
 
 @require_GET

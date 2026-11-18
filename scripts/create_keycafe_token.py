@@ -10,10 +10,11 @@ import sys
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urljoin
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from keycafe_api.transport import open_authenticated, trusted_destination
 from keycafe_tableau.env import load_env_file
 
 
@@ -47,6 +48,9 @@ def main() -> int:
     )
     parser.add_argument("--json", action="store_true", help="Print the full JSON response.")
     args = parser.parse_args()
+
+    if not trusted_destination(args.base_url, args.base_url):
+        parser.error("The Keycafe base URL must use HTTPS with a valid hostname and no embedded credentials.")
 
     email = args.email or input("Keycafe email: ").strip()
     password = args.password or getpass.getpass("Keycafe password: ")
@@ -103,6 +107,8 @@ def create_authorization(
     base_url: str, email: str, password: str, body: dict, user_agent: str
 ) -> dict:
     url = urljoin(base_url.rstrip("/") + "/", "v0/authorization")
+    if not trusted_destination(url, base_url):
+        raise ValueError("The token endpoint must use HTTPS on the configured Keycafe origin.")
     encoded = base64.b64encode(f"{email}:{password}".encode("utf-8")).decode("ascii")
     request = Request(
         url,
@@ -117,7 +123,7 @@ def create_authorization(
         method="POST",
     )
 
-    with urlopen(request, timeout=20) as response:
+    with open_authenticated(request, timeout=20) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

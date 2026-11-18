@@ -53,6 +53,16 @@ class LocalGroupTests(UpstreamIsolatedTestCase):
         self.assertEqual(client.delete(url).status_code, 403)
         self.assertEqual(client.put(url, body, content_type='application/json', HTTP_X_CSRFTOKEN=token, HTTP_ORIGIN='https://evil.example').status_code, 403)
 
+    @patch('keycafe_api.views.resolve_auth', return_value=KeycafeAuth('dummy'))
+    @patch('keycafe_api.keycafe.keycafe_json', side_effect=AssertionError('unexpected enrichment'))
+    @patch('keycafe_api.keycafe.fetch_all_pages')
+    def test_picker_shares_inventory_and_skips_enrichment(self, fetch, detail, auth):
+        fetch.return_value = [{'id': 123, 'name': 'Fleet', 'currentUser': {'id': 456}}]
+        response = self.client.get('/api/inventory/')
+        self.assertEqual(response.json(), {'keys': [{'id': 123, 'name': 'Fleet', 'serialNumber': ''}]})
+        fetch_keys(auth.return_value, key_ids=[])
+        fetch.assert_called_once()
+
     @patch('keycafe_api.keycafe.fetch_key_detail_if_needed', side_effect=lambda auth, key: key)
     @patch('keycafe_api.keycafe.fetch_all_pages', return_value=[{'id': 123}, {'id': 456}])
     def test_membership_filters_before_enrichment_and_reports_missing(self, fetch, enrich):

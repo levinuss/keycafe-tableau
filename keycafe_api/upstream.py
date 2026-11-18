@@ -25,10 +25,12 @@ def scope(auth):
 
 
 @contextmanager
-def lock():
+def lock(key):
     path = Path(settings.TABLEAU_UPSTREAM_DB)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(str(path) + '.lock', 'a') as handle:
+    # Bound the number of lock files even as holders and inventory change.
+    stripe = hashlib.sha256(key.encode()).hexdigest()[:2]
+    with open(f'{path}.{stripe}.lock', 'a') as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             yield
@@ -36,19 +38,25 @@ def lock():
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+def cache_row(key):
+    with database() as db:
+        return db.execute('SELECT value FROM cache WHERE key = ? AND expires > ?',
+                          (key, time.time())).fetchone()
+
+
 def cached(key, ttl, loader, validate=lambda value: True):
-    # Serialize fills across workers so simultaneous tabs share one upstream fetch.
-    with lock():
-        with database() as db:
-            now = time.time()
-            db.execute('DELETE FROM cache WHERE expires <= ?', (now,))
-            row = db.execute('SELECT value FROM cache WHERE key = ?', (key,)).fetchone()
-            if row:
-                return json.loads(row[0])
+    row = cache_row(key)
+    if row:
+        return json.loads(row[0])
+    with lock(key):
+        row = cache_row(key)
+        if row:
+            return json.loads(row[0])
         value = loader()
         if not validate(value):
             return value
         with database() as db:
+            db.execute('DELETE FROM cache WHERE expires <= ?', (time.time(),))
             db.execute('INSERT OR REPLACE INTO cache VALUES (?, ?, ?)',
                        (key, time.time() + ttl, json.dumps(value)))
         return value
