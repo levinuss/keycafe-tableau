@@ -2,21 +2,31 @@
 import json
 import sqlite3
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from django.conf import settings
 
 from .keycafe import KeycafeError
 
+_INITIALIZED_DBS: set[tuple[str, int]] = set()
+
 
 @contextmanager
 def database():
     path = Path(settings.TABLEAU_GROUPS_DB)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path, timeout=10) as connection:
-        connection.execute('CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, key_ids TEXT NOT NULL)')
-        yield connection
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(path, timeout=10)) as connection:
+            db_key = (str(path.resolve()), path.stat().st_ino)
+            if db_key not in _INITIALIZED_DBS:
+                connection.execute('PRAGMA journal_mode=WAL')
+                connection.execute('CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, key_ids TEXT NOT NULL)')
+                _INITIALIZED_DBS.add(db_key)
+            with connection:
+                yield connection
+    except (sqlite3.Error, OSError):
+        raise KeycafeError(503, 'Der Gruppenspeicher ist nicht verfügbar.') from None
 
 
 def list_groups():
@@ -26,10 +36,11 @@ def list_groups():
 
 
 def get_group(group_id):
-    for group in list_groups():
-        if group['id'] == group_id:
-            return group
-    raise KeycafeError(404, 'Schlüsselgruppe nicht gefunden.')
+    with database() as connection:
+        row = connection.execute('SELECT id, name, key_ids FROM groups WHERE id = ?', (group_id,)).fetchone()
+    if not row:
+        raise KeycafeError(404, 'Schlüsselgruppe nicht gefunden.')
+    return {"id": row[0], "name": row[1], "keyIds": json.loads(row[2])}
 
 
 def save_group(payload, group_id=None):
@@ -40,7 +51,7 @@ def save_group(payload, group_id=None):
         raise KeycafeError(400, 'Bitte einen Gruppennamen mit höchstens 120 Zeichen eingeben.')
     if not isinstance(ids, list) or len(ids) > 2000 or any(
         not isinstance(value, (int, str)) or isinstance(value, bool) or not str(value).isascii()
-        or not str(value).isdigit() or int(value) <= 0 for value in ids
+        or not str(value).isdigit() or len(str(value)) > 20 or int(value) <= 0 for value in ids
     ):
         raise KeycafeError(400, 'Bitte gültige numerische Keycafe-Schlüssel-IDs angeben (maximal 2000).')
     ids = list(dict.fromkeys(str(int(value)) for value in ids))

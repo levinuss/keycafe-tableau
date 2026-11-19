@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from django.test import Client, SimpleTestCase
+from django.test import Client
 
 from .keycafe import KeycafeError, normalize_key, parse_link_header, resolve_auth, summarize_keys
 from .demo import demo_groups, demo_keys
@@ -21,6 +21,26 @@ class KeycafeModelTests(UpstreamIsolatedTestCase):
 
         self.assertEqual(links["next"], "https://www.keycafe.com/v0/key?page=2")
         self.assertEqual(links["last"], "https://www.keycafe.com/v0/key?page=5")
+
+    def test_parse_link_header_rfc8288_variants(self):
+        links = parse_link_header(
+            '<https://www.keycafe.com/v0/key?cursor=a,b> ; title="p2"; rel=next, '
+            '<https://www.keycafe.com/v0/key?page=1>; REL="first"'
+        )
+        self.assertEqual(links["next"], "https://www.keycafe.com/v0/key?cursor=a,b")
+        self.assertEqual(links["first"], "https://www.keycafe.com/v0/key?page=1")
+
+    def test_normalize_key_ignores_non_dict_nested_fields(self):
+        key = normalize_key({
+            "id": 9,
+            "name": "Garage",
+            "homeLocation": "invalid",
+            "currentLocation": 123,
+            "currentUser": ["unexpected"],
+        })
+        self.assertEqual(key["status"], "unknown")
+        self.assertIsNone(key["currentLocation"])
+        self.assertIsNone(key["currentUser"])
 
     def test_checked_in_at_home(self):
         key = normalize_key(
@@ -175,6 +195,7 @@ class KeycafeModelTests(UpstreamIsolatedTestCase):
 
 class DemoModeTests(UpstreamIsolatedTestCase):
     def setUp(self):
+        super().setUp()
         self.client = Client()
 
     def test_demo_groups_include_all_keys(self):

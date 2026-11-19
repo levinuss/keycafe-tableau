@@ -1,11 +1,12 @@
 from .testing import UpstreamIsolatedTestCase
 import json
 import os
+import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from django.test import Client, SimpleTestCase, override_settings
+from django.test import Client, override_settings
 
 from .groups import list_groups, save_group
 from .keycafe import KeycafeAuth, KeycafeError, fetch_keys
@@ -37,7 +38,7 @@ class LocalGroupTests(UpstreamIsolatedTestCase):
         self.assertEqual(self.client.delete(url).status_code, 404)
 
     def test_validation(self):
-        for payload in [[], {}, {'name': ' ', 'keyIds': []}, {'name': 'A', 'keyIds': [True]}, {'name': 'A', 'keyIds': ['../2']}, {'name': 'A', 'keyIds': [0]}]:
+        for payload in [[], {}, {'name': ' ', 'keyIds': []}, {'name': 'A', 'keyIds': [True]}, {'name': 'A', 'keyIds': ['../2']}, {'name': 'A', 'keyIds': [0]}, {'name': 'A', 'keyIds': ['9' * 5000]}]:
             with self.subTest(payload=payload), self.assertRaises(KeycafeError):
                 save_group(payload)
         self.assertEqual(self.client.post('/api/groups/', '{', content_type='application/json').status_code, 400)
@@ -60,22 +61,31 @@ class LocalGroupTests(UpstreamIsolatedTestCase):
         fetch.return_value = [{'id': 123, 'name': 'Fleet', 'currentUser': {'id': 456}}]
         response = self.client.get('/api/inventory/')
         self.assertEqual(response.json(), {'keys': [{'id': 123, 'name': 'Fleet', 'serialNumber': ''}]})
+        # Arbitrary organization query parameters must not bypass the shared inventory cache.
+        self.assertEqual(self.client.get('/api/inventory/?organization=attacker-1').status_code, 200)
         fetch_keys(auth.return_value, key_ids=[])
         fetch.assert_called_once()
 
     @patch('keycafe_api.keycafe.fetch_key_detail_if_needed', side_effect=lambda auth, key: key)
     @patch('keycafe_api.keycafe.fetch_all_pages', return_value=[{'id': 123}, {'id': 456}])
     def test_membership_filters_before_enrichment_and_reports_missing(self, fetch, enrich):
-        result = fetch_keys(KeycafeAuth('dummy'), key_ids=['123', '999'])
+        auth = KeycafeAuth('dummy')
+        result = fetch_keys(auth, key_ids=['123', '999'])
         self.assertEqual([key['id'] for key in result['keys']], [123])
         self.assertEqual(result['missingKeyIds'], ['999'])
         self.assertEqual(result['summary']['total'], 1)
         enrich.assert_called_once()
-        self.assertNotIn('group', fetch.call_args.args[2])
-        self.assertEqual(fetch_keys(KeycafeAuth('dummy'), key_ids=[])['keys'], [])
+        fetch.assert_called_once_with('/v0/key', auth)
+        self.assertEqual(fetch_keys(auth, key_ids=[])['keys'], [])
 
     @patch('keycafe_api.views.resolve_auth', return_value=KeycafeAuth('dummy'))
     @patch('keycafe_api.views.fetch_keys')
     def test_unknown_group_does_not_fetch_inventory(self, fetch, auth):
         self.assertEqual(self.client.get('/api/keys/?group=unknown').status_code, 404)
         fetch.assert_not_called()
+
+    @patch('keycafe_api.groups.sqlite3.connect', side_effect=sqlite3.OperationalError('locked'))
+    def test_group_store_error_returns_503(self, _connect):
+        response = self.client.get('/api/groups/')
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('Gruppenspeicher', response.json()['error'])

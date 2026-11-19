@@ -1,11 +1,27 @@
 from .testing import UpstreamIsolatedTestCase
+import http.client
+import io
 import os
+import ssl
 from urllib.error import URLError
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from .keycafe import KEYCAFE_MAX_RESPONSE_BYTES, KeycafeAuth, KeycafeError, fetch_key_detail_if_needed, keycafe_fetch, normalize_key
 
-from .keycafe import KeycafeAuth, KeycafeError, fetch_key_detail_if_needed, fetch_groups, keycafe_fetch, normalize_key
+
+class _FakeResponse:
+    def __init__(self, data: bytes, headers=None):
+        self._stream = io.BytesIO(data)
+        self.headers = headers or {}
+
+    def read(self, size=-1):
+        return self._stream.read(size)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
 
 
 class DetailTests(UpstreamIsolatedTestCase):
@@ -43,17 +59,32 @@ class DetailTests(UpstreamIsolatedTestCase):
         fetch.side_effect = KeycafeError(502, "Nicht erreichbar")
         self.assertEqual(fetch_key_detail_if_needed(self.auth, {"id": 1})["detailError"], "Nicht erreichbar")
 
-    @patch("keycafe_api.keycafe.open_authenticated", side_effect=URLError("private upstream details"))
-    def test_network_failure_is_sanitized(self, _fetch):
+    def test_network_and_tls_failures_are_sanitized(self):
+        for failure in [
+            URLError("private upstream details"),
+            http.client.RemoteDisconnected("private socket drop"),
+            http.client.IncompleteRead(b"partial"),
+            ssl.SSLError("private tls error"),
+            ConnectionResetError("private reset"),
+        ]:
+            with self.subTest(failure=type(failure).__name__), patch("keycafe_api.keycafe.open_authenticated", side_effect=failure):
+                with self.assertRaises(KeycafeError) as raised:
+                    keycafe_fetch("https://www.keycafe.com/v0/key", self.auth)
+                self.assertEqual(raised.exception.status, 502)
+                self.assertNotIn("private", str(raised.exception))
+
+    @patch("keycafe_api.keycafe.open_authenticated", return_value=_FakeResponse(b"\xff\xfe"))
+    def test_invalid_utf8_upstream_response_returns_502(self, _fetch):
         with self.assertRaises(KeycafeError) as raised:
             keycafe_fetch("https://www.keycafe.com/v0/key", self.auth)
         self.assertEqual(raised.exception.status, 502)
-        self.assertNotIn("private", str(raised.exception))
 
-    @patch("keycafe_api.keycafe.fetch_all_pages")
-    def test_groups_drop_unused_fields(self, fetch):
-        fetch.return_value = [{"id": 1, "name": "Keys", "type": "KEY", "owner": {"email": "private"}}]
-        self.assertEqual(fetch_groups(self.auth), [{"id": 1, "name": "Keys"}])
+    @patch("keycafe_api.keycafe.open_authenticated")
+    def test_oversized_upstream_response_returns_502(self, fetch):
+        fetch.return_value = _FakeResponse(b"a" * (KEYCAFE_MAX_RESPONSE_BYTES + 1))
+        with self.assertRaises(KeycafeError) as raised:
+            keycafe_fetch("https://www.keycafe.com/v0/key", self.auth)
+        self.assertEqual(raised.exception.status, 502)
 
     def test_keys_drop_unused_personal_and_location_data(self):
         result = normalize_key({"id": 1, "owner": {"email": "private"}, "currentUser": {"firstName": "Ada", "mobile": "private"}})
@@ -64,3 +95,6 @@ class DetailTests(UpstreamIsolatedTestCase):
         self.assertEqual(self.client.get("/healthz/").json(), {"status": "ok"})
         with patch.dict(os.environ, {"KEYCAFE_DEMO_MODE": "true"}):
             self.assertIn("no-store", self.client.get("/api/keys/")["Cache-Control"])
+
+    def test_frontend_index_requires_get(self):
+        self.assertEqual(self.client.post("/").status_code, 405)

@@ -1,23 +1,37 @@
 """Cross-worker cache and rolling request budget for the single Keycafe server."""
+import fcntl
 import hashlib
 import json
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from django.conf import settings
-import fcntl
+
+MAX_COOLDOWN_SECONDS = 900
+_INITIALIZED_DBS: set[tuple[str, int]] = set()
 
 
+@contextmanager
 def database():
+    from .keycafe import KeycafeError
+
     path = Path(settings.TABLEAU_UPSTREAM_DB)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path, timeout=25)
-    db.execute('CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, expires REAL, value TEXT)')
-    db.execute('CREATE TABLE IF NOT EXISTS requests (created REAL)')
-    db.execute('CREATE TABLE IF NOT EXISTS cooldown (id INTEGER PRIMARY KEY, until REAL)')
-    return db
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(path, timeout=25)) as db:
+            db_key = (str(path.resolve()), path.stat().st_ino)
+            if db_key not in _INITIALIZED_DBS:
+                db.execute('PRAGMA journal_mode=WAL')
+                db.execute('CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, expires REAL, value TEXT)')
+                db.execute('CREATE TABLE IF NOT EXISTS requests (created REAL)')
+                db.execute('CREATE TABLE IF NOT EXISTS cooldown (id INTEGER PRIMARY KEY, until REAL)')
+                _INITIALIZED_DBS.add(db_key)
+            with db:
+                yield db
+    except (sqlite3.Error, OSError):
+        raise KeycafeError(503, 'Der Zwischenspeicher ist nicht verfügbar.') from None
 
 
 def scope(auth):
@@ -26,12 +40,21 @@ def scope(auth):
 
 @contextmanager
 def lock(key):
+    from .keycafe import KeycafeError
+
     path = Path(settings.TABLEAU_UPSTREAM_DB)
-    path.parent.mkdir(parents=True, exist_ok=True)
     # Bound the number of lock files even as holders and inventory change.
     stripe = hashlib.sha256(key.encode()).hexdigest()[:2]
-    with open(f'{path}.{stripe}.lock', 'a') as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(f'{path}.{stripe}.lock', 'a')
+    except OSError:
+        raise KeycafeError(503, 'Der Zwischenspeicher ist nicht verfügbar.') from None
+    with handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        except OSError:
+            raise KeycafeError(503, 'Der Zwischenspeicher ist nicht verfügbar.') from None
         try:
             yield
         finally:
@@ -77,5 +100,10 @@ def reserve():
 
 
 def backoff(seconds=60):
+    until = time.time() + min(max(60, seconds), MAX_COOLDOWN_SECONDS)
     with database() as db:
-        db.execute('INSERT OR REPLACE INTO cooldown VALUES (1, ?)', (time.time() + max(60, seconds),))
+        db.execute(
+            'INSERT INTO cooldown (id, until) VALUES (1, ?) '
+            'ON CONFLICT(id) DO UPDATE SET until = MAX(cooldown.until, excluded.until)',
+            (until,),
+        )

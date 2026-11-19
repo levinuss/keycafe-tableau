@@ -1,22 +1,29 @@
 import base64
+import hashlib
+import http.client
 import json
 import os
-from django.conf import settings
-from . import upstream
+import re
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin
+from urllib.parse import quote, urlencode, urljoin
 from urllib.request import Request
 
+from django.conf import settings
+
+from . import upstream
 from .transport import open_authenticated, trusted_destination
 
 
 KEYCAFE_BASE_URL = os.environ.get("KEYCAFE_BASE_URL", "https://www.keycafe.com")
-KEYCAFE_MAX_PAGES = int(os.environ.get("KEYCAFE_MAX_PAGES", "25"))
+KEYCAFE_MAX_PAGES = int(os.environ.get("KEYCAFE_MAX_PAGES") or "25")
+KEYCAFE_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 KEYCAFE_USER_AGENT = os.environ.get(
     "KEYCAFE_USER_AGENT",
     "KeycafeTableau/0.1 (+https://docs.keycafe.com/reference/api-overview)",
 )
+LINK_HEADER_RE = re.compile(r"<([^>]+)>\s*;\s*([^,]*)")
+LINK_REL_RE = re.compile(r'(?:^|;)\s*rel\s*=\s*(?:"([^"]+)"|([^;\s]+))', re.IGNORECASE)
 
 
 class KeycafeError(Exception):
@@ -57,25 +64,45 @@ def resolve_auth() -> KeycafeAuth:
     return KeycafeAuth(authorization=f"Basic {encoded}")
 
 
-def fetch_groups(auth: KeycafeAuth, organization: str | None = None) -> list[dict]:
-    groups = fetch_all_pages("/v0/group", auth, {"organization": organization})
-    key_groups = [group for group in groups if group.get("type") in {None, "KEY"}]
-    return [{"id": group.get("id"), "name": group.get("name") or ""}
-            for group in sorted(key_groups, key=group_sort_key)]
+def _minimize_location(location) -> dict | None:
+    if not isinstance(location, dict):
+        return None
+    return {"id": location.get("id"), "name": location.get("name")}
 
 
-def fetch_inventory(auth, organization=None):
-    params = {"organization": organization}
+def _minimize_user(user) -> dict | None:
+    if not isinstance(user, dict):
+        return None
+    return {
+        field: user[field]
+        for field in ("id", "firstName", "lastName", "email", "contactEmail")
+        if field in user
+    }
 
+
+def _minimize_key(key: dict) -> dict:
+    minimized = {
+        "id": key.get("id"),
+        "name": key.get("name"),
+        "homeLocation": _minimize_location(key.get("homeLocation")),
+        "currentLocation": _minimize_location(key.get("currentLocation")),
+        "currentUser": _minimize_user(key.get("currentUser")),
+    }
+    if "serialNumber" in key:
+        minimized["serialNumber"] = key.get("serialNumber")
+    return minimized
+
+
+def fetch_inventory(auth: KeycafeAuth):
     return upstream.cached(
-        f"inventory:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{organization}",
+        f"inventory:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}",
         settings.KEYCAFE_CACHE_SECONDS,
-        lambda: fetch_all_pages("/v0/key", auth, params),
+        lambda: [_minimize_key(row) for row in fetch_all_pages("/v0/key", auth)],
     )
 
 
-def fetch_keys(auth: KeycafeAuth, group: str | None = None, organization: str | None = None, key_ids=None):
-    shallow_keys = fetch_inventory(auth, organization)
+def fetch_keys(auth: KeycafeAuth, key_ids=None):
+    shallow_keys = fetch_inventory(auth)
     missing_ids = []
     if key_ids is not None:
         wanted = set(map(str, key_ids))
@@ -92,39 +119,56 @@ def fetch_keys(auth: KeycafeAuth, group: str | None = None, organization: str | 
 
 
 def fetch_pickup_time(auth: KeycafeAuth, key: dict) -> dict:
-    if not key.get("currentUser") or not key.get("id"):
+    user = key.get("currentUser")
+    if not isinstance(user, dict) or not user or not key.get("id"):
         return key
+    user_digest = hashlib.sha256(json.dumps(user, sort_keys=True).encode("utf-8")).hexdigest()
+
+    def load_pickup():
+        events = keycafe_json(keycafe_url("/v0/event", {"key": key["id"], "type": "PICKUP"}), auth)
+        if not isinstance(events, list) or not all(isinstance(event, dict) for event in events):
+            return None
+        return {"removedAt": events[0].get("dateCreated") if events else None}
+
     try:
         # Events describe completed pickups; exchange timestamps describe authorization.
         # Search Events returns newest first, so only the first page is needed.
-        events = upstream.cached(
-            f"pickup:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{key['id']}:{json.dumps(key['currentUser'], sort_keys=True)}",
+        pickup = upstream.cached(
+            f"pickup:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{key['id']}:{user_digest}",
             settings.KEYCAFE_CACHE_SECONDS,
-            lambda: keycafe_json(keycafe_url("/v0/event", {"key": key["id"], "type": "PICKUP"}), auth),
-            validate=lambda events: isinstance(events, list) and all(isinstance(event, dict) for event in events),
+            load_pickup,
+            validate=lambda value: isinstance(value, dict),
         )
-        if not isinstance(events, list) or not all(isinstance(event, dict) for event in events):
+        if not isinstance(pickup, dict):
             raise KeycafeError(502, "Keycafe hat ungültige Entnahmeereignisse zurückgegeben.")
-        return {**key, "removedAt": events[0].get("dateCreated") if events else None}
+        return {**key, "removedAt": pickup.get("removedAt")}
     except KeycafeError:
         # Missing history must not hide the live inventory or holder.
         return {**key, "removedAt": None}
 
 
 def fetch_key_detail_if_needed(auth: KeycafeAuth, key: dict) -> dict:
-    user = key.get("currentUser") or {}
-    location = key.get("currentLocation") or {}
-    home = key.get("homeLocation") or {}
+    user = key.get("currentUser") if isinstance(key.get("currentUser"), dict) else {}
+    location = key.get("currentLocation") if isinstance(key.get("currentLocation"), dict) else {}
+    home = key.get("homeLocation") if isinstance(key.get("homeLocation"), dict) else {}
     has_holder = any(user.get(field) for field in ("firstName", "lastName", "email", "contactEmail"))
     has_location = location.get("id") is not None and bool(location.get("name")) and home.get("id") is not None
     if not key.get("id") or ("serialNumber" in key and (has_holder or (not user and has_location))):
         return key
 
+    key_id = quote(str(key["id"]), safe="")
+
+    def load_detail():
+        detail = keycafe_json(f"/v0/key/{key_id}", auth)
+        if not isinstance(detail, dict) or str(detail.get("id")) != str(key["id"]):
+            return None
+        return _minimize_key(detail)
+
     try:
         detail = upstream.cached(
             f"detail:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{key['id']}",
             settings.KEYCAFE_CACHE_SECONDS,
-            lambda: keycafe_json(f"/v0/key/{key['id']}", auth),
+            load_detail,
             validate=lambda detail: isinstance(detail, dict) and str(detail.get("id")) == str(key["id"]),
         )
         if not isinstance(detail, dict) or str(detail.get("id")) != str(key["id"]):
@@ -153,7 +197,10 @@ def fetch_all_pages(path: str, auth: KeycafeAuth, params: dict | None = None) ->
             raise KeycafeError(502, "Keycafe hat ein unerwartetes Antwortformat zurückgegeben.")
 
         rows.extend(data)
-        links = parse_link_header(headers.get("Link"))
+        links = {}
+        raw_links = headers.get_all("Link") if hasattr(headers, "get_all") else ([headers.get("Link")] if headers.get("Link") else [])
+        for raw_header in raw_links or []:
+            links.update(parse_link_header(raw_header))
         url = keycafe_url(links["next"]) if links.get("next") else None
 
     return rows
@@ -181,7 +228,10 @@ def keycafe_fetch(url: str, auth: KeycafeAuth):
     upstream.reserve()
     try:
         with open_authenticated(request, timeout=20) as response:
-            body = response.read().decode("utf-8")
+            raw = response.read(KEYCAFE_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > KEYCAFE_MAX_RESPONSE_BYTES:
+                raise KeycafeError(502, "Keycafe hat ein unerwartetes Antwortformat zurückgegeben.")
+            body = raw.decode("utf-8")
             return parse_json(body), response.headers
     except HTTPError as error:
         if error.code == 429:
@@ -194,7 +244,9 @@ def keycafe_fetch(url: str, auth: KeycafeAuth):
             raise KeycafeError(503, "Keycafe hat das Anfragelimit erreicht. Bitte später erneut versuchen.") from None
         message = f"Die Anfrage an Keycafe ist fehlgeschlagen (HTTP {error.code})."
         raise KeycafeError(502, message) from None
-    except (URLError, TimeoutError):
+    except UnicodeDecodeError:
+        raise KeycafeError(502, "Keycafe hat ein unerwartetes Antwortformat zurückgegeben.") from None
+    except (URLError, TimeoutError, http.client.HTTPException, OSError):
         raise KeycafeError(502, "Keycafe ist derzeit nicht erreichbar.") from None
 
 
@@ -228,22 +280,17 @@ def parse_link_header(header: str | None) -> dict[str, str]:
         return {}
 
     links = {}
-    for part in header.split(","):
-        section = part.strip()
-        if not section.startswith("<") or ">;" not in section:
-            continue
-        url, rest = section[1:].split(">;", 1)
-        rel_prefix = 'rel="'
-        if rel_prefix in rest:
-            rel = rest.split(rel_prefix, 1)[1].split('"', 1)[0]
-            links[rel] = url
+    for url, params in LINK_HEADER_RE.findall(header):
+        match = LINK_REL_RE.search(params)
+        if match:
+            links[match.group(1) or match.group(2)] = url.strip()
     return links
 
 
 def normalize_key(key: dict) -> dict:
-    home_location = key.get("homeLocation")
-    current_location = key.get("currentLocation")
-    current_user = key.get("currentUser")
+    home_location = key.get("homeLocation") if isinstance(key.get("homeLocation"), dict) else None
+    current_location = key.get("currentLocation") if isinstance(key.get("currentLocation"), dict) else None
+    current_user = key.get("currentUser") if isinstance(key.get("currentUser"), dict) else None
     at_home = bool(
         home_location
         and current_location
@@ -272,7 +319,7 @@ def normalize_key(key: dict) -> dict:
 
 
 def normalize_location(location: dict | None) -> dict | None:
-    if not location:
+    if not isinstance(location, dict) or not location:
         return None
 
     return {
@@ -281,7 +328,7 @@ def normalize_location(location: dict | None) -> dict | None:
 
 
 def normalize_user(user: dict | None) -> dict | None:
-    if not user:
+    if not isinstance(user, dict) or not user:
         return None
 
     name = " ".join(filter(None, [user.get("firstName"), user.get("lastName")]))
@@ -305,11 +352,6 @@ def summarize_keys(keys: list[dict]) -> dict:
         summary[key["status"]] = summary.get(key["status"], 0) + 1
 
     return summary
-
-
-def group_sort_key(group: dict):
-    name = group.get("name") or ""
-    return (0 if name.lower() == "all keys" else 1, name.lower())
 
 
 def status_label(status: str) -> str:
