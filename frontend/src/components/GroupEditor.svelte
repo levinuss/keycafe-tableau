@@ -56,7 +56,7 @@
   <label for="edit-group" class="form-label">Gruppe</label>
   <select id="edit-group" class="form-select mb-3" value={selected} disabled={busy} on:change={event => edit(event.currentTarget.value)}>
     <option value="">Neue Gruppe</option>
-    {#each groups as group}<option value={group.id}>{group.name}</option>{/each}
+    {#each groups as group (group.id)}<option value={group.id}>{group.name}</option>{/each}
   </select>
   <form on:submit|preventDefault={() => save()}>
     <label for="group-name" class="form-label">Name</label>
@@ -69,7 +69,7 @@
       <label for="inventory-search" class="form-label d-block">Schlüssel suchen</label>
       <input id="inventory-search" class="form-control mb-2" bind:value={query} type="search" />
       <div class="group-key-picker">
-        {#each visible as key}
+        {#each visible as key (key.id)}
           <label class="d-flex gap-2 py-2"><input type="checkbox" checked={selectedIds.has(String(key.id))} disabled={busy} on:change={event => toggle(key.id, event.currentTarget.checked)} /><span>{key.name} · {key.id}{key.serialNumber ? ` · ${key.serialNumber}` : ''}</span></label>
         {/each}
       </div>

@@ -4,7 +4,7 @@
   import GroupEditor from "./components/GroupEditor.svelte";
   import KeyCard from "./components/KeyCard.svelte";
   import { requestJson, validConfig, validGroups, validKeys } from "./lib/api.js";
-  import { currentLocationLabel, emptySummary, filterKeys, holderLabel } from "./lib/keycafeModel.js";
+  import { currentLocationLabel, emptySummary, filterKeys, holderLabel, removalTimeLabel } from "./lib/keycafeModel.js";
 
   const statuses = [
     { id: "all", label: "Alle", count: "total" },
@@ -13,13 +13,6 @@
     { id: "unknown", label: "Ungeklärt", count: "unknown" },
   ];
   let autoRefreshMinutes = "0";
-  onMount(() => {
-    const timer = setInterval(() => {
-      if (autoRefreshMinutes !== "0" && !isBusy && !editingGroups && !document.hidden &&
-          Date.now() - lastRefresh >= Number(autoRefreshMinutes) * 60000) refresh();
-    }, 15000);
-    return () => clearInterval(timer);
-  });
   let lastRefresh = Date.now();
   let groups = [];
   let editingGroups = false;
@@ -44,9 +37,34 @@
   $: groupName = groups.find((group) => String(group.id) === selectedGroup)?.name || "Schlüsselübersicht";
 
   let keyRequest = 0;
-  boot();
+
+  function maybeAutoRefresh() {
+    if (
+      autoRefreshMinutes !== "0" &&
+      !isBusy &&
+      !editingGroups &&
+      !document.hidden &&
+      Date.now() - lastRefresh >= Number(autoRefreshMinutes) * 60000
+    ) {
+      refresh();
+    }
+  }
+
+  onMount(() => {
+    boot();
+    const timer = setInterval(maybeAutoRefresh, 15000);
+    const onVisibilityChange = () => {
+      if (!document.hidden) maybeAutoRefresh();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  });
 
   async function boot() {
+    lastRefresh = Date.now();
     setBusy("Verbindung wird hergestellt...");
     try {
       const config = await requestJson("/api/config/", validConfig);
@@ -67,8 +85,9 @@
     }
   }
 
-  async function loadGroups() {
+  async function loadGroups(allowGroupReload = true) {
     if (!keycafeConfigured && !demoMode) return;
+    lastRefresh = Date.now();
     setBusy("Schlüsselgruppen werden geladen...");
     try {
       const payload = await requestJson("/api/groups/", validGroups);
@@ -78,7 +97,7 @@
       const current = groups.find(group => String(group.id) === selectedGroup);
       resetGroup(current?.id ?? groups[0]?.id ?? "");
       if (groups.length) {
-        await loadKeys();
+        await loadKeys(allowGroupReload);
       } else {
         setStatus("Noch keine Gruppen eingerichtet. Bitte über „Gruppen verwalten“ eine Gruppe anlegen.");
       }
@@ -108,7 +127,7 @@
     await loadKeys();
   }
 
-  async function loadKeys() {
+  async function loadKeys(allowGroupReload = true) {
     if (!selectedGroup) return;
     const request = ++keyRequest;
     lastRefresh = Date.now();
@@ -126,6 +145,10 @@
       setStatus(demoMode ? "Demodaten" : "Schlüsselübersicht ist aktuell");
     } catch (error) {
       if (request !== keyRequest) return;
+      if (error.status === 404 && allowGroupReload) {
+        await loadGroups(false);
+        return;
+      }
       isConnected = false;
       connectionLabel = "Nicht verbunden";
       setStatus(error.message, true);
@@ -166,7 +189,7 @@
   <aside class="sidebar">
     <div class="rail-heading"><span>Schlüsselgruppen</span><span class="mono">{String(groups.length).padStart(2, "0")}</span></div>
     <nav class="group-nav" aria-label="Schlüsselgruppen">
-      {#each groups as group}
+      {#each groups as group (group.id)}
         <button type="button" class:active={selectedGroup === String(group.id)} aria-current={selectedGroup === String(group.id) ? "true" : undefined} disabled={isBusy} on:click={() => selectGroup(group.id)}>
           <span>{group.name || `Gruppe ${group.id}`}</span>
         </button>
@@ -175,7 +198,7 @@
     <div class="mobile-group">
       <label for="group" class="visually-hidden">Schlüsselgruppe</label>
       <select id="group" class="form-select" value={selectedGroup} disabled={isBusy || !groups.length} on:change={(event) => selectGroup(event.currentTarget.value)}>
-        {#each groups as group}<option value={String(group.id)}>{group.name || `Gruppe ${group.id}`}</option>{/each}
+        {#each groups as group (group.id)}<option value={String(group.id)}>{group.name || `Gruppe ${group.id}`}</option>{/each}
         {#if !groups.length}<option>Keine Gruppen geladen</option>{/if}
       </select>
     </div>
@@ -234,10 +257,10 @@
       {:else}
         <section class="table-responsive table-shell" aria-label="Schlüssel">
           <table class="table align-middle mb-0">
-            <thead><tr><th scope="col">Schlüssel</th><th scope="col">Status</th><th scope="col">Verbleib</th><th scope="col">Ausgegeben an</th></tr></thead>
+            <thead><tr><th scope="col">Schlüssel</th><th scope="col">Status</th><th scope="col">Verbleib</th><th scope="col">Ausgegeben an</th><th scope="col">Entnommen am</th></tr></thead>
             <tbody>
               {#each filteredKeys as key (key.id)}
-                <tr><th scope="row"><span class="table-key-name">{key.name}</span><span class="table-serial">{key.serialNumber || "Kein Schlüsselanhänger"}</span>{#if key.detailError}<span class="detail-error">{key.detailError}</span>{/if}</th><td><span class={`key-status status-${key.status}`}><span class="status-dot"></span>{key.statusLabel}</span></td><td>{currentLocationLabel(key)}</td><td>{holderLabel(key)}</td></tr>
+                <tr><th scope="row"><span class="table-key-name">{key.name}</span><span class="table-serial">{key.serialNumber || "Kein Schlüsselanhänger"}</span>{#if key.detailError}<span class="detail-error">{key.detailError}</span>{/if}</th><td><span class={`key-status status-${key.status}`}><span class="status-dot"></span>{key.statusLabel}</span></td><td>{currentLocationLabel(key)}</td><td>{holderLabel(key)}</td><td title={key.status === "checked-out" ? "Europe/Berlin" : undefined}>{key.status === "checked-out" ? removalTimeLabel(key.removedAt) : "–"}</td></tr>
               {/each}
             </tbody>
           </table>

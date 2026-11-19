@@ -5,6 +5,8 @@ import {
   filterKeys,
   holderLabel,
   keySearchText,
+  locationName,
+  removalTimeLabel,
 } from "./keycafeModel.js";
 
 describe("keycafeModel", () => {
@@ -46,6 +48,8 @@ describe("keycafeModel", () => {
 
   it("falls back when a location is missing", () => {
     assert.equal(currentLocationLabel({ status: "unknown" }), "Nicht bestätigt");
+    assert.equal(locationName({ name: "Lobby" }), "Lobby");
+    assert.equal(locationName(null), "Nicht verfügbar");
   });
 
   it("shows the SmartBox name only for a confirmed at-home key", () => {
@@ -75,11 +79,10 @@ describe("keycafeModel", () => {
     assert.match(text, /lobby/);
     assert.match(text, /abc123/);
   });
-});
 
-it("formats removal times in Berlin time and handles missing history", async () => {
-  const { removalTimeLabel } = await import("./keycafeModel.js");
-  assert.equal(removalTimeLabel("2026-11-13T08:30:00Z"), "13.11.2026, 09:30");
-  assert.equal(removalTimeLabel(null), "Nicht verfügbar");
-  assert.equal(removalTimeLabel("invalid"), "Nicht verfügbar");
+  it("formats removal times in Berlin time and handles missing history", () => {
+    assert.equal(removalTimeLabel("2026-11-13T08:30:00Z"), "13.11.2026, 09:30");
+    assert.equal(removalTimeLabel(null), "Nicht verfügbar");
+    assert.equal(removalTimeLabel("invalid"), "Nicht verfügbar");
+  });
 });
