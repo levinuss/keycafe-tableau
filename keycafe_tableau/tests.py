@@ -59,3 +59,31 @@ class ProxyAuthenticationBoundaryTests(SimpleTestCase):
         for path in ("/oidc/login/", "/oidc/callback/", "/oidc/logout/"):
             with self.subTest(path=path):
                 self.assertEqual(self.client.get(path).status_code, 404)
+
+    def test_security_headers_and_csrf_cookie_flags(self):
+        with self.settings(CSRF_COOKIE_SECURE=True, CSRF_COOKIE_HTTPONLY=True):
+            response = self.client.get("/api/config/")
+        self.assertEqual(response["X-Frame-Options"], "DENY")
+        cookie = response.cookies["csrftoken"]
+        self.assertTrue(cookie["httponly"])
+        self.assertTrue(cookie["secure"])
+
+    def test_secret_key_enforcement_and_env_parsing(self):
+        from django.core.exceptions import ImproperlyConfigured
+        from keycafe_tableau.settings import _env_bool, _env_int, _parse_csv, _resolve_secret_key
+
+        for bad in ("", "local-development-keycafe-tableau", "replace-with-a-random-secret"):
+            with self.subTest(secret=bad), patch.dict(os.environ, {"DJANGO_SECRET_KEY": bad}):
+                with self.assertRaises(ImproperlyConfigured):
+                    _resolve_secret_key(debug=False, running_tests=False)
+                self.assertTrue(_resolve_secret_key(debug=True, running_tests=False))
+                self.assertTrue(_resolve_secret_key(debug=False, running_tests=True))
+
+        with patch.dict(os.environ, {"DJANGO_SECRET_KEY": "custom-production-secret"}):
+            self.assertEqual(_resolve_secret_key(debug=False, running_tests=False), "custom-production-secret")
+
+        self.assertEqual(_parse_csv(" tableau.example.org , , 127.0.0.1 "), ["tableau.example.org", "127.0.0.1"])
+        with patch.dict(os.environ, {"KEYCAFE_CACHE_SECONDS": "", "DJANGO_CSRF_COOKIE_SECURE": ""}):
+            self.assertEqual(_env_int("KEYCAFE_CACHE_SECONDS", 60), 60)
+            self.assertTrue(_env_bool("DJANGO_CSRF_COOKIE_SECURE", True))
+            self.assertFalse(_env_bool("DJANGO_CSRF_COOKIE_SECURE", False))
