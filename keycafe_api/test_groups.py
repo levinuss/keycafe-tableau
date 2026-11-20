@@ -66,7 +66,7 @@ class LocalGroupTests(UpstreamIsolatedTestCase):
         fetch_keys(auth.return_value, key_ids=[])
         fetch.assert_called_once()
 
-    @patch('keycafe_api.keycafe.fetch_key_detail_if_needed', side_effect=lambda auth, key: key)
+    @patch('keycafe_api.keycafe.fetch_key_detail_if_needed', side_effect=lambda auth, key, **_: key)
     @patch('keycafe_api.keycafe.fetch_all_pages', return_value=[{'id': 123}, {'id': 456}])
     def test_membership_filters_before_enrichment_and_reports_missing(self, fetch, enrich):
         auth = KeycafeAuth('dummy')
@@ -76,11 +76,17 @@ class LocalGroupTests(UpstreamIsolatedTestCase):
         self.assertEqual(result['summary']['total'], 1)
         enrich.assert_called_once()
         fetch.assert_called_once_with('/v0/key', auth)
-        self.assertEqual(fetch_keys(auth, key_ids=[])['keys'], [])
+
+    @patch('keycafe_api.keycafe.fetch_all_pages')
+    def test_empty_group_short_circuits_without_fetching_inventory(self, fetch):
+        result = fetch_keys(KeycafeAuth('dummy'), key_ids=[])
+        self.assertEqual(result, {'missingKeyIds': [], 'keys': [], 'summary': {'total': 0, 'at-home': 0, 'checked-out': 0, 'unknown': 0}})
+        fetch.assert_not_called()
 
     @patch('keycafe_api.views.resolve_auth', return_value=KeycafeAuth('dummy'))
     @patch('keycafe_api.views.fetch_keys')
-    def test_unknown_group_does_not_fetch_inventory(self, fetch, auth):
+    def test_unknown_or_missing_group_does_not_fetch_inventory(self, fetch, auth):
+        self.assertEqual(self.client.get('/api/keys/').status_code, 400)
         self.assertEqual(self.client.get('/api/keys/?group=unknown').status_code, 404)
         fetch.assert_not_called()
 

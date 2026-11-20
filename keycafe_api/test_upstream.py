@@ -6,7 +6,16 @@ from urllib.error import HTTPError
 from django.test import override_settings
 from .testing import UpstreamIsolatedTestCase
 from . import upstream
-from .keycafe import KeycafeAuth, KeycafeError, fetch_inventory, fetch_key_detail_if_needed, fetch_pickup_time, keycafe_fetch
+from .keycafe import (
+    KeycafeAuth,
+    KeycafeError,
+    PICKUP_CACHE_SECONDS,
+    fetch_inventory,
+    fetch_key_detail_if_needed,
+    fetch_keys,
+    fetch_pickup_time,
+    keycafe_fetch,
+)
 
 
 class UpstreamTests(UpstreamIsolatedTestCase):
@@ -136,3 +145,50 @@ class UpstreamTests(UpstreamIsolatedTestCase):
             with self.assertRaises(KeycafeError):
                 upstream.cached('failure', 60, loader)
         self.assertEqual(loader.call_count, 2)
+
+    @patch('keycafe_api.keycafe.keycafe_json')
+    def test_pickup_timestamp_uses_longer_ttl_than_missing_history(self, fetch_json):
+        auth = KeycafeAuth('dummy')
+        key_found = {'id': 1, 'currentUser': {'id': 10, 'email': 'ada@example.com'}}
+        key_empty = {'id': 2, 'currentUser': {'id': 11, 'email': 'bob@example.com'}}
+
+        fetch_json.side_effect = [[{'dateCreated': '2026-11-13T08:30:00Z'}], []]
+        with patch('keycafe_api.upstream.time.time', return_value=1000):
+            self.assertEqual(fetch_pickup_time(auth, key_found)['removedAt'], '2026-11-13T08:30:00Z')
+            self.assertIsNone(fetch_pickup_time(auth, key_empty)['removedAt'])
+
+        # After 120s (> 60s default, < PICKUP_CACHE_SECONDS): key_found stays cached, key_empty refetches.
+        fetch_json.side_effect = [[{'dateCreated': '2026-11-13T09:00:00Z'}]]
+        with patch('keycafe_api.upstream.time.time', return_value=1120):
+            self.assertEqual(fetch_pickup_time(auth, key_found)['removedAt'], '2026-11-13T08:30:00Z')
+            self.assertEqual(fetch_pickup_time(auth, key_empty)['removedAt'], '2026-11-13T09:00:00Z')
+        self.assertEqual(fetch_json.call_count, 3)
+
+        # Past PICKUP_CACHE_SECONDS: key_found expires too.
+        fetch_json.side_effect = [[{'dateCreated': '2026-11-13T10:00:00Z'}]]
+        with patch('keycafe_api.upstream.time.time', return_value=1000 + PICKUP_CACHE_SECONDS + 1):
+            self.assertEqual(fetch_pickup_time(auth, key_found)['removedAt'], '2026-11-13T10:00:00Z')
+
+    @patch('keycafe_api.keycafe.KEYCAFE_ENRICH_WORKERS', 1)
+    @patch('keycafe_api.keycafe.fetch_all_pages')
+    @patch('keycafe_api.keycafe.keycafe_json')
+    def test_503_circuit_breaker_skips_remaining_uncached_keys_but_serves_cached(self, fetch_json, fetch_pages):
+        auth = KeycafeAuth('dummy')
+        k1 = {'id': 1, 'name': 'A', 'serialNumber': 'S1', 'currentUser': {'id': 1, 'firstName': 'Ada'}}
+        k2 = {'id': 2, 'name': 'B', 'serialNumber': 'S2', 'currentUser': {'id': 2, 'firstName': 'Bob'}}
+        k3 = {'id': 3, 'name': 'C', 'serialNumber': 'S3', 'currentUser': {'id': 3, 'firstName': 'Cyd'}}
+        # Pre-warm pickup cache for k3.
+        fetch_json.return_value = [{'dateCreated': '2026-11-13T08:30:00Z'}]
+        self.assertEqual(fetch_pickup_time(auth, k3)['removedAt'], '2026-11-13T08:30:00Z')
+        fetch_json.reset_mock()
+
+        fetch_pages.return_value = [k1, k2, k3]
+        fetch_json.side_effect = KeycafeError(503, 'rate limited')
+        result = fetch_keys(auth, key_ids=['1', '2', '3'])
+
+        # k1 trips the 503 breaker, k2 skips upstream completely, k3 still returns its cached pickup time.
+        fetch_json.assert_called_once()
+        by_id = {k['id']: k for k in result['keys']}
+        self.assertIsNone(by_id[1]['removedAt'])
+        self.assertIsNone(by_id[2]['removedAt'])
+        self.assertEqual(by_id[3]['removedAt'], '2026-11-13T08:30:00Z')

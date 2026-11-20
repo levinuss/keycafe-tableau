@@ -4,7 +4,9 @@ import http.client
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from threading import Event
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urljoin
 from urllib.request import Request
@@ -18,6 +20,8 @@ from .transport import open_authenticated, trusted_destination
 KEYCAFE_BASE_URL = os.environ.get("KEYCAFE_BASE_URL", "https://www.keycafe.com")
 KEYCAFE_MAX_PAGES = int(os.environ.get("KEYCAFE_MAX_PAGES") or "25")
 KEYCAFE_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+KEYCAFE_ENRICH_WORKERS = 4
+PICKUP_CACHE_SECONDS = 900
 KEYCAFE_USER_AGENT = os.environ.get(
     "KEYCAFE_USER_AGENT",
     "KeycafeTableau/0.1 (+https://docs.keycafe.com/reference/api-overview)",
@@ -101,15 +105,38 @@ def fetch_inventory(auth: KeycafeAuth):
     )
 
 
+def _pickup_ttl(pickup: dict) -> int:
+    if isinstance(pickup, dict) and pickup.get("removedAt"):
+        return max(settings.KEYCAFE_CACHE_SECONDS, PICKUP_CACHE_SECONDS)
+    return settings.KEYCAFE_CACHE_SECONDS
+
+
+def _enrich_key(auth: KeycafeAuth, key: dict, rate_limited: Event) -> dict:
+    enriched = fetch_key_detail_if_needed(auth, key, rate_limited=rate_limited)
+    return normalize_key(fetch_pickup_time(auth, enriched, rate_limited=rate_limited))
+
+
 def fetch_keys(auth: KeycafeAuth, key_ids=None):
+    if key_ids is not None and not key_ids:
+        return {
+            "missingKeyIds": [],
+            "keys": [],
+            "summary": summarize_keys([]),
+        }
+
     shallow_keys = fetch_inventory(auth)
     missing_ids = []
     if key_ids is not None:
         wanted = set(map(str, key_ids))
         shallow_keys = [key for key in shallow_keys if str(key.get("id")) in wanted]
         missing_ids = sorted(wanted - {str(key.get("id")) for key in shallow_keys})
-    enriched_keys = [fetch_key_detail_if_needed(auth, key) for key in shallow_keys]
-    normalized_keys = [normalize_key(fetch_pickup_time(auth, key)) for key in enriched_keys]
+
+    rate_limited = Event()
+    if len(shallow_keys) <= 1:
+        normalized_keys = [_enrich_key(auth, key, rate_limited) for key in shallow_keys]
+    else:
+        with ThreadPoolExecutor(max_workers=min(KEYCAFE_ENRICH_WORKERS, len(shallow_keys))) as pool:
+            normalized_keys = list(pool.map(lambda key: _enrich_key(auth, key, rate_limited), shallow_keys))
 
     return {
         "missingKeyIds": missing_ids,
@@ -118,11 +145,12 @@ def fetch_keys(auth: KeycafeAuth, key_ids=None):
     }
 
 
-def fetch_pickup_time(auth: KeycafeAuth, key: dict) -> dict:
+def fetch_pickup_time(auth: KeycafeAuth, key: dict, rate_limited: Event | None = None) -> dict:
     user = key.get("currentUser")
     if not isinstance(user, dict) or not user or not key.get("id"):
         return key
     user_digest = hashlib.sha256(json.dumps(user, sort_keys=True).encode("utf-8")).hexdigest()
+    cache_key = f"pickup:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{key['id']}:{user_digest}"
 
     def load_pickup():
         events = keycafe_json(keycafe_url("/v0/event", {"key": key["id"], "type": "PICKUP"}), auth)
@@ -131,23 +159,29 @@ def fetch_pickup_time(auth: KeycafeAuth, key: dict) -> dict:
         return {"removedAt": events[0].get("dateCreated") if events else None}
 
     try:
+        if rate_limited and rate_limited.is_set():
+            row = upstream.cache_row(cache_key)
+            pickup = json.loads(row[0]) if row else None
+            return {**key, "removedAt": pickup.get("removedAt") if isinstance(pickup, dict) else None}
         # Events describe completed pickups; exchange timestamps describe authorization.
         # Search Events returns newest first, so only the first page is needed.
         pickup = upstream.cached(
-            f"pickup:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{key['id']}:{user_digest}",
-            settings.KEYCAFE_CACHE_SECONDS,
+            cache_key,
+            _pickup_ttl,
             load_pickup,
             validate=lambda value: isinstance(value, dict),
         )
         if not isinstance(pickup, dict):
             raise KeycafeError(502, "Keycafe hat ungültige Entnahmeereignisse zurückgegeben.")
         return {**key, "removedAt": pickup.get("removedAt")}
-    except KeycafeError:
+    except KeycafeError as error:
+        if rate_limited and error.status == 503:
+            rate_limited.set()
         # Missing history must not hide the live inventory or holder.
         return {**key, "removedAt": None}
 
 
-def fetch_key_detail_if_needed(auth: KeycafeAuth, key: dict) -> dict:
+def fetch_key_detail_if_needed(auth: KeycafeAuth, key: dict, rate_limited: Event | None = None) -> dict:
     user = key.get("currentUser") if isinstance(key.get("currentUser"), dict) else {}
     location = key.get("currentLocation") if isinstance(key.get("currentLocation"), dict) else {}
     home = key.get("homeLocation") if isinstance(key.get("homeLocation"), dict) else {}
@@ -157,6 +191,7 @@ def fetch_key_detail_if_needed(auth: KeycafeAuth, key: dict) -> dict:
         return key
 
     key_id = quote(str(key["id"]), safe="")
+    cache_key = f"detail:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{key['id']}"
 
     def load_detail():
         detail = keycafe_json(f"/v0/key/{key_id}", auth)
@@ -165,17 +200,25 @@ def fetch_key_detail_if_needed(auth: KeycafeAuth, key: dict) -> dict:
         return _minimize_key(detail)
 
     try:
-        detail = upstream.cached(
-            f"detail:{KEYCAFE_BASE_URL}:{upstream.scope(auth)}:{key['id']}",
-            settings.KEYCAFE_CACHE_SECONDS,
-            load_detail,
-            validate=lambda detail: isinstance(detail, dict) and str(detail.get("id")) == str(key["id"]),
-        )
+        if rate_limited and rate_limited.is_set():
+            row = upstream.cache_row(cache_key)
+            if not row:
+                return {**key, "detailError": "Keycafe pausiert wegen des Anfragelimits. Bitte später erneut versuchen."}
+            detail = json.loads(row[0])
+        else:
+            detail = upstream.cached(
+                cache_key,
+                settings.KEYCAFE_CACHE_SECONDS,
+                load_detail,
+                validate=lambda detail: isinstance(detail, dict) and str(detail.get("id")) == str(key["id"]),
+            )
         if not isinstance(detail, dict) or str(detail.get("id")) != str(key["id"]):
             raise KeycafeError(502, "Keycafe hat ungültige Schlüsseldetails zurückgegeben.")
         # Preserve only descriptive fields, never stale location/holder state.
         return {**{field: key.get(field) for field in ("name", "serialNumber")}, **detail}
     except KeycafeError as error:
+        if rate_limited and error.status == 503:
+            rate_limited.set()
         return {**key, "detailError": str(error)}
 
 

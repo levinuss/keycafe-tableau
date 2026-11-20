@@ -78,10 +78,11 @@ def cached(key, ttl, loader, validate=lambda value: True):
         value = loader()
         if not validate(value):
             return value
+        ttl_seconds = ttl(value) if callable(ttl) else ttl
         with database() as db:
             db.execute('DELETE FROM cache WHERE expires <= ?', (time.time(),))
             db.execute('INSERT OR REPLACE INTO cache VALUES (?, ?, ?)',
-                       (key, time.time() + ttl, json.dumps(value)))
+                       (key, time.time() + ttl_seconds, json.dumps(value)))
         return value
 
 

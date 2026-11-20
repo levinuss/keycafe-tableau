@@ -4,7 +4,7 @@ from django.conf import settings
 from django.http import FileResponse, HttpResponse, JsonResponse
 from django.middleware.csrf import get_token
 from django.views.decorators.cache import never_cache
-from django.views.decorators.http import require_GET, require_http_methods
+from django.views.decorators.http import require_GET, require_http_methods, require_safe
 
 from .demo import demo_groups, demo_keys, demo_mode_enabled
 from .groups import delete_group, get_group, list_groups, save_group
@@ -71,9 +71,11 @@ def keys(request):
     if demo_mode_enabled():
         return JsonResponse(demo_keys(group=request.GET.get("group")))
     def handler(auth):
-        group_id = request.GET.get("group")
-        group = get_group(group_id) if group_id else None
-        return fetch_keys(auth, key_ids=group["keyIds"] if group else None)
+        group_id = (request.GET.get("group") or "").strip()
+        if not group_id:
+            raise KeycafeError(400, "Bitte eine Schlüsselgruppe angeben.")
+        group = get_group(group_id)
+        return fetch_keys(auth, key_ids=group["keyIds"])
     return _keycafe_response(handler)
 
 
@@ -93,7 +95,7 @@ def _local_response(handler):
         return JsonResponse({"error": str(error)}, status=error.status)
 
 
-@require_GET
+@require_safe
 @never_cache
 def frontend_index(_request):
     index_path = settings.BASE_DIR / "frontend" / "dist" / "index.html"
